@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Word document accessibility tester</title>
+<link rel="shortcut icon" href="favicon.ico">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --ink: #16233d;
+  --ink-soft: #4a5875;
+  --paper: #efefef;
+  --panel: #ffffff;
+  --line: #d9d2be;
+  --border-strong: #dddddd;
+  --red: #a5322a;
+  --red-bg: #fbeae7;
+  --green: #29614a;
+  --green-bg: #e9f2ec;
+  --amber: #93641a;
+  --amber-bg: #faf1dc;
+  --neutral: #5b6472;
+  --neutral-bg: #f4f3ef;
+  --info: #29506b;
+  --info-bg: #e6eef3;
+  --focus: #1b4fbf;
+  --brand: #c03c0c;
+  --font-brand: 'Source Sans Pro', 'Helvetica Neue', Helvetica, Arial, Frutiger, 'Frutiger Linotype', Univers, Calibri, 'Gill Sans', 'Gill Sans MT', 'Myriad Pro', Myriad, 'DejaVu Sans Condensed', 'Liberation Sans', 'Nimbus Sans L', Tahoma, Geneva, sans-serif;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'IBM Plex Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --radius: 4px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1rem 4rem;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.wrap { max-width: 860px; margin: 0 auto; }
+
+.intopia-logo { width: 180px; height: auto; display: block; margin-bottom: 1.5rem; }
+
+h1 {
+  color: var(--brand);
+  font-family: var(--font-brand);
+  font-size: 2.4rem;
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0 0 0.75rem;
+}
+
+h2, h3 { color: #000000; font-family: var(--font-display); }
+h2 { font-size: 1.6rem; margin: 2.5rem 0 1rem; }
+h3 { font-size: 1.15rem; margin: 0; }
+
+.intro { color: var(--ink-soft); max-width: 62ch; margin: 0 0 0.5rem; }
+
+.panel {
+  background: var(--panel);
+  border: 2px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.field-label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
+.field-hint { color: var(--ink-soft); font-size: 0.9rem; margin: 0 0 0.75rem; }
+
+input[type="file"] {
+  font: inherit;
+  padding: 0.5rem;
+  border: 2px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--neutral-bg);
+  max-width: 100%;
+}
+
+.error-message {
+  color: var(--red);
+  background: var(--red-bg);
+  border-left: 4px solid var(--red);
+  padding: 0.6rem 0.8rem;
+  margin: 0.75rem 0 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-weight: 500;
+}
+
+button {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.65rem 1.25rem;
+  border-radius: var(--radius);
+  border: 2px solid var(--brand);
+  background: var(--brand);
+  color: #ffffff;
+  cursor: pointer;
+  margin-top: 1.25rem;
+}
+
+button.secondary { background: var(--panel); color: var(--ink); border-color: var(--ink); }
+
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+#results-heading:focus { outline: 3px solid var(--focus); outline-offset: 6px; animation: ring-fade 2s forwards; }
+@keyframes ring-fade { from { outline-color: var(--focus); } to { outline-color: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  #results-heading:focus { animation: none; }
+}
+
+.badge, .badge-neutral, .flag-badge {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--radius);
+  white-space: nowrap;
+}
+
+.badge-pass { color: var(--green); background: var(--green-bg); border: 1px solid var(--green); }
+.badge-fail { color: var(--red); background: var(--red-bg); border: 1px solid var(--red); }
+.badge-review { color: var(--amber); background: var(--amber-bg); border: 1px solid var(--amber); }
+.badge-untested { color: var(--neutral); background: var(--neutral-bg); border: 1px solid var(--neutral); }
+.badge-neutral { color: var(--neutral); background: var(--neutral-bg); border: 1px solid var(--neutral); }
+.flag-badge { color: var(--red); background: var(--red-bg); border: 1px solid var(--red); }
+
+.tested-file { font-family: var(--font-mono); font-size: 0.9rem; color: var(--ink-soft); margin: 0.25rem 0 0; }
+
+.summary-list { list-style: none; margin: 0; padding: 0; }
+.summary-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border-strong);
+}
+.summary-item:last-child { border-bottom: 0; }
+.summary-item a { color: var(--ink); }
+
+.test-card {
+  background: var(--panel);
+  border: 2px solid #dddddd;
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-top: 1.5rem;
+}
+.test-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.test-summary { color: var(--ink-soft); margin: 0.5rem 0 0; }
+.test-detail { margin: 0.75rem 0 0; }
+
+.test-note {
+  background: var(--info-bg);
+  border-left: 4px solid var(--info);
+  color: var(--info);
+  padding: 0.7rem 0.9rem;
+  margin: 1rem 0 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.result-list { list-style: none; margin: 1rem 0 0; padding: 0; }
+.result-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border-strong);
+}
+.result-item:last-child { border-bottom: 0; }
+.result-item--flag {
+  border-left: 4px solid var(--red);
+  background: var(--red-bg);
+  border-bottom-color: transparent;
+  margin-bottom: 0.4rem;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.result-item__label { font-weight: 600; }
+.result-item__value { font-family: var(--font-mono); font-size: 0.95rem; word-break: break-word; }
+
+footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <img src="https://intopia.digital/wp-content/themes/intopia-refresh/assets/images/intopia.png" alt="Intopia logo" class="intopia-logo">
+  <h1>Word document accessibility tester</h1>
+  <p class="intro">Upload a Word document and this page checks it against a small set of accessibility tests. Your file is read in your browser and never uploaded anywhere.</p>
+</header>
+
+<main>
+  <div id="upload-panel">
+    <h2>Upload a Word document</h2>
+    <div class="panel">
+      <label class="field-label" for="docx-file">Choose a Word file</label>
+      <p class="field-hint" id="file-hint">Must be a .docx file. Older .doc files need to be saved as .docx in Word first.</p>
+      <input type="file" id="docx-file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" aria-describedby="file-hint file-error">
+      <p class="error-message" id="file-error" hidden></p>
+      <div><button type="button" id="run-tests">Run accessibility tests</button></div>
+    </div>
+  </div>
+
+  <div id="results-panel" hidden>
+    <h2 id="results-heading" tabindex="-1">Results</h2>
+    <p class="tested-file" id="tested-file-name"></p>
+
+    <h3>Summary</h3>
+    <ul class="summary-list" id="summary-list"></ul>
+
+    <div id="test-container"></div>
+
+    <button type="button" class="secondary" id="start-over">Start over</button>
+  </div>
+</main>
+
+<footer>
+  <p>Two tests so far: document title and document language. More to come.</p>
+</footer>
+</div>
+
+<script>
+/* core:start */
+/* ------------------------------------------------------------------
+   Word accessibility tester: core logic
+   Written so it can run in a browser and in node (for verification).
+   No dependencies. Unzipping uses DecompressionStream('deflate-raw').
+   ------------------------------------------------------------------ */
+
+var NS = {
+  w: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+  dc: 'http://purl.org/dc/elements/1.1/',
+  cp: 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties'
+};
+
+/* ---------- minimal zip reader ---------- */
+
+function u16(view, offset) { return view.getUint16(offset, true); }
+function u32(view, offset) { return view.getUint32(offset, true); }
+
+function findEndOfCentralDirectory(view) {
+  var maxBack = Math.min(view.byteLength, 65557);
+  for (var i = view.byteLength - 22; i >= view.byteLength - maxBack; i--) {
+    if (i < 0) break;
+    if (u32(view, i) === 0x06054b50) return i;
+  }
+  return -1;
+}
+
+function readCentralDirectory(buffer) {
+  var view = new DataView(buffer);
+  var eocd = findEndOfCentralDirectory(view);
+  if (eocd === -1) throw new Error('NOT_A_ZIP');
+
+  var count = u16(view, eocd + 10);
+  var start = u32(view, eocd + 16);
+  if (start === 0xffffffff || count === 0xffff) throw new Error('ZIP64_UNSUPPORTED');
+
+  var decoder = new TextDecoder('utf-8');
+  var entries = {};
+  var pos = start;
+
+  for (var n = 0; n < count; n++) {
+    if (u32(view, pos) !== 0x02014b50) throw new Error('BAD_CENTRAL_DIRECTORY');
+    var method = u16(view, pos + 10);
+    var compressedSize = u32(view, pos + 20);
+    var uncompressedSize = u32(view, pos + 24);
+    var nameLength = u16(view, pos + 28);
+    var extraLength = u16(view, pos + 30);
+    var commentLength = u16(view, pos + 32);
+    var localOffset = u32(view, pos + 42);
+    var name = decoder.decode(new Uint8Array(buffer, pos + 46, nameLength));
+
+    entries[name] = {
+      name: name,
+      method: method,
+      compressedSize: compressedSize,
+      uncompressedSize: uncompressedSize,
+      localOffset: localOffset
+    };
+    pos += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function inflateRaw(bytes) {
+  var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Response(stream).arrayBuffer();
+}
+
+function readEntryText(buffer, entry) {
+  var view = new DataView(buffer);
+  if (u32(view, entry.localOffset) !== 0x04034b50) throw new Error('BAD_LOCAL_HEADER');
+  var nameLength = u16(view, entry.localOffset + 26);
+  var extraLength = u16(view, entry.localOffset + 28);
+  var dataStart = entry.localOffset + 30 + nameLength + extraLength;
+  var bytes = new Uint8Array(buffer, dataStart, entry.compressedSize);
+
+  if (entry.method === 0) {
+    return Promise.resolve(new TextDecoder('utf-8').decode(bytes));
+  }
+  if (entry.method === 8) {
+    return inflateRaw(bytes).then(function (out) {
+      return new TextDecoder('utf-8').decode(new Uint8Array(out));
+    });
+  }
+  return Promise.reject(new Error('UNSUPPORTED_COMPRESSION_' + entry.method));
+}
+
+/* Reads the parts we care about. Returns { parts: {path: xmlString}, missing: [] } */
+function readDocxParts(buffer, wanted) {
+  var entries;
+  try {
+    entries = readCentralDirectory(buffer);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  if (!entries['[Content_Types].xml'] || !entries['word/document.xml']) {
+    return Promise.reject(new Error('NOT_A_DOCX'));
+  }
+
+  var parts = {};
+  var missing = [];
+  var jobs = wanted.map(function (path) {
+    if (!entries[path]) { missing.push(path); return Promise.resolve(); }
+    return readEntryText(buffer, entries[path]).then(function (text) { parts[path] = text; });
+  });
+
+  return Promise.all(jobs).then(function () {
+    return { parts: parts, missing: missing, entryNames: Object.keys(entries) };
+  });
+}
+
+/* ---------- XML helpers ---------- */
+
+function elements(doc, ns, localName) {
+  if (!doc) return [];
+  var found = doc.getElementsByTagNameNS ? doc.getElementsByTagNameNS(ns, localName) : [];
+  return Array.prototype.slice.call(found);
+}
+
+function attr(el, ns, localName) {
+  if (!el) return null;
+  var value = el.getAttributeNS ? el.getAttributeNS(ns, localName) : null;
+  return value === '' ? null : value;
+}
+
+function textOf(el) {
+  return el && el.textContent ? el.textContent : '';
+}
+
+/* ---------- tests ---------- */
+
+/* Test 1: document title
+   Source: docProps/core.xml -> dc:title
+   Deterministic part: is a non-empty title present.
+   Not deterministic: whether the title describes the document. Manual review. */
+function testDocumentTitle(docs) {
+  var core = docs['docProps/core.xml'];
+  var result = {
+    id: 'title',
+    name: 'Document title',
+    summary: 'Checks whether the document has a title set in its file properties.',
+    items: [],
+    note: null
+  };
+
+  if (!core) {
+    result.status = 'fail';
+    result.detail = 'This file has no docProps/core.xml part, so no document title is stored.';
+    return result;
+  }
+
+  var titles = elements(core, NS.dc, 'title');
+  var value = titles.length ? textOf(titles[0]) : '';
+
+  if (!titles.length) {
+    result.status = 'fail';
+    result.detail = 'No dc:title element found in docProps/core.xml.';
+    return result;
+  }
+  if (!value.trim()) {
+    result.status = 'fail';
+    result.detail = 'A dc:title element is present but empty.';
+    return result;
+  }
+
+  result.status = 'pass';
+  result.detail = 'A document title is set.';
+  result.items = [{ label: 'Title', value: value.trim() }];
+  result.note = 'This test confirms a title is present. It can\u2019t judge whether that title describes the document, that needs <strong>manual review</strong>.';
+  return result;
+}
+
+/* Test 2: document language
+   Primary source: word/styles.xml -> w:docDefaults/w:rPrDefault/w:rPr/w:lang/@w:val
+   Fallback: word/settings.xml -> w:themeFontLang/@w:val
+   Also reports other w:lang values used in the body, as information only. */
+function testDocumentLanguage(docs) {
+  var styles = docs['word/styles.xml'];
+  var settings = docs['word/settings.xml'];
+  var document = docs['word/document.xml'];
+  var result = {
+    id: 'language',
+    name: 'Document language',
+    summary: 'Checks whether a default language is set for the document, and reports any other languages used.',
+    items: [],
+    note: null
+  };
+
+  var defaultLang = null;
+  var source = null;
+
+  if (styles) {
+    var defaults = elements(styles, NS.w, 'rPrDefault');
+    for (var i = 0; i < defaults.length && !defaultLang; i++) {
+      var langs = elements(defaults[i], NS.w, 'lang');
+      for (var j = 0; j < langs.length && !defaultLang; j++) {
+        var val = attr(langs[j], NS.w, 'val');
+        if (val && val.trim()) { defaultLang = val.trim(); source = 'word/styles.xml (document defaults)'; }
+      }
+    }
+  }
+
+  if (!defaultLang && settings) {
+    var theme = elements(settings, NS.w, 'themeFontLang');
+    for (var k = 0; k < theme.length && !defaultLang; k++) {
+      var themeVal = attr(theme[k], NS.w, 'val');
+      if (themeVal && themeVal.trim()) { defaultLang = themeVal.trim(); source = 'word/settings.xml (theme font language)'; }
+    }
+  }
+
+  var others = {};
+  [styles, document].forEach(function (doc) {
+    elements(doc, NS.w, 'lang').forEach(function (el) {
+      var v = attr(el, NS.w, 'val');
+      if (v && v.trim() && v.trim() !== defaultLang) others[v.trim()] = true;
+    });
+  });
+  var otherLangs = Object.keys(others);
+
+  if (!defaultLang && !otherLangs.length) {
+    result.status = 'fail';
+    result.detail = 'No language is set anywhere in this document. Screen readers will fall back to the user\u2019s own default voice.';
+    return result;
+  }
+
+  if (!defaultLang) {
+    result.status = 'review';
+    result.detail = 'No document default language is set, but language is set on some content.';
+    result.items = otherLangs.map(function (lang) {
+      return { label: 'Language found', value: lang, neutral: true };
+    });
+    result.note = 'Content that isn\u2019t covered by one of these will fall back to the reader\u2019s own default. Setting a document default fixes this. Confirming which content is affected needs <strong>manual review</strong>.';
+    return result;
+  }
+
+  result.status = 'pass';
+  result.detail = 'A default language is set for the document.';
+  result.items = [{ label: 'Default language', value: defaultLang + ' \u2014 from ' + source }];
+  otherLangs.forEach(function (lang) {
+    result.items.push({ label: 'Also used', value: lang, neutral: true });
+  });
+  result.note = otherLangs.length
+    ? 'This test confirms a default language is set, and that other languages are used somewhere in the file. It can\u2019t confirm the tags match the actual content, or that every passage in another language is marked. That needs <strong>manual review</strong>.'
+    : 'This test confirms a default language is set. It can\u2019t confirm the tag matches the language the document is actually written in, or that passages in other languages are marked. That needs <strong>manual review</strong>.';
+  return result;
+}
+
+var WANTED_PARTS = [
+  'docProps/core.xml',
+  'word/settings.xml',
+  'word/styles.xml',
+  'word/document.xml'
+];
+
+var TESTS = [testDocumentTitle, testDocumentLanguage];
+
+function runTests(buffer, parseXml) {
+  return readDocxParts(buffer, WANTED_PARTS).then(function (read) {
+    var docs = {};
+    Object.keys(read.parts).forEach(function (path) {
+      docs[path] = parseXml(read.parts[path]);
+    });
+    return {
+      results: TESTS.map(function (test) { return test(docs); }),
+      missing: read.missing
+    };
+  });
+}
+
+/* core:end */
+</script>
+<script>
+/* ------------------------------------------------------------------
+   Word accessibility tester: UI layer
+   ------------------------------------------------------------------ */
+
+var STATUS_LABELS = {
+  pass: 'Pass',
+  fail: 'Fail',
+  review: 'Needs review',
+  untested: 'Not tested'
+};
+
+var fileInput = document.getElementById('docx-file');
+var fileError = document.getElementById('file-error');
+var runButton = document.getElementById('run-tests');
+var startOverButton = document.getElementById('start-over');
+var uploadPanel = document.getElementById('upload-panel');
+var resultsPanel = document.getElementById('results-panel');
+var resultsHeading = document.getElementById('results-heading');
+var summaryList = document.getElementById('summary-list');
+var testContainer = document.getElementById('test-container');
+var fileNameOut = document.getElementById('tested-file-name');
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function badgeHtml(status) {
+  return '<span class="badge badge-' + status + '">' + STATUS_LABELS[status] + '</span>';
+}
+
+function showError(message) {
+  fileError.innerHTML = escapeHtml(message);
+  fileError.hidden = false;
+  fileInput.setAttribute('aria-invalid', 'true');
+  fileInput.focus();
+}
+
+function clearError() {
+  fileError.textContent = '';
+  fileError.hidden = true;
+  fileInput.removeAttribute('aria-invalid');
+}
+
+/* Notes are authored by this tool and contain intentional markup.
+   Everything sourced from the uploaded file is escaped. */
+function renderResult(result, number) {
+  var id = 'test-' + result.id;
+  var html = '<section class="test-card" id="' + id + '">';
+  html += '<div class="test-card__header">';
+  html += '<h3>Test ' + number + ': ' + escapeHtml(result.name) + '</h3>';
+  html += badgeHtml(result.status);
+  html += '</div>';
+  html += '<p class="test-summary">' + escapeHtml(result.summary) + '</p>';
+  html += '<p class="test-detail">' + escapeHtml(result.detail) + '</p>';
+
+  if (result.items && result.items.length) {
+    html += '<ul class="result-list">';
+    result.items.forEach(function (item) {
+      var itemClass = 'result-item' + (item.flag ? ' result-item--flag' : '');
+      html += '<li class="' + itemClass + '">';
+      if (item.flag) {
+        html += '<span class="flag-badge">' + escapeHtml(item.flagLabel || 'Problem') + '</span>';
+      } else if (item.neutral) {
+        html += '<span class="badge-neutral">' + escapeHtml(item.label) + '</span>';
+      } else {
+        html += '<span class="result-item__label">' + escapeHtml(item.label) + '</span>';
+      }
+      html += '<span class="result-item__value">' + escapeHtml(item.value) + '</span>';
+      html += '</li>';
+    });
+    html += '</ul>';
+  }
+
+  if (result.note) {
+    html += '<p class="test-note">' + result.note + '</p>';
+  }
+  html += '</section>';
+  return html;
+}
+
+function renderSummary(results) {
+  var html = '';
+  results.forEach(function (result) {
+    html += '<li class="summary-item">';
+    html += badgeHtml(result.status);
+    html += '<a href="#test-' + result.id + '">' + escapeHtml(result.name) + '</a>';
+    html += '</li>';
+  });
+  summaryList.innerHTML = html;
+}
+
+function render(results, fileName) {
+  renderSummary(results);
+  testContainer.innerHTML = results.map(function (result, index) {
+    return renderResult(result, index + 1);
+  }).join('');
+  fileNameOut.textContent = fileName;
+  uploadPanel.hidden = true;
+  resultsPanel.hidden = false;
+  resultsHeading.focus();
+}
+
+function messageForError(err) {
+  switch (err.message) {
+    case 'NOT_A_ZIP':
+    case 'NOT_A_DOCX':
+    case 'BAD_CENTRAL_DIRECTORY':
+    case 'BAD_LOCAL_HEADER':
+      return 'That file isn\u2019t a Word .docx document. Choose a file saved in .docx format.';
+    case 'OLD_DOC_FORMAT':
+      return 'That looks like an older .doc file. Open it in Word and save it as .docx, then try again.';
+    case 'ZIP64_UNSUPPORTED':
+      return 'This file uses zip64, which this tool can\u2019t read yet. Try saving a fresh copy from Word.';
+    case 'NO_DECOMPRESSION':
+      return 'This browser can\u2019t unzip files. Use a current version of Chrome, Edge, Firefox or Safari.';
+    default:
+      if (err.message.indexOf('UNSUPPORTED_COMPRESSION') === 0) {
+        return 'This file uses a compression method this tool can\u2019t read. Try saving a fresh copy from Word.';
+      }
+      return 'Something went wrong reading that file: ' + err.message;
+  }
+}
+
+function looksLikeOldDoc(buffer) {
+  var head = new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength));
+  var signature = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+  if (head.length < 8) return false;
+  return signature.every(function (byte, index) { return head[index] === byte; });
+}
+
+function parseXml(text) {
+  return new DOMParser().parseFromString(text, 'text/xml');
+}
+
+runButton.addEventListener('click', function () {
+  clearError();
+  var file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    showError('Choose a Word document (.docx) to test.');
+    return;
+  }
+  if (typeof DecompressionStream === 'undefined') {
+    showError(messageForError(new Error('NO_DECOMPRESSION')));
+    return;
+  }
+
+  file.arrayBuffer().then(function (buffer) {
+    if (looksLikeOldDoc(buffer)) throw new Error('OLD_DOC_FORMAT');
+    return runTests(buffer, parseXml);
+  }).then(function (output) {
+    render(output.results, file.name);
+  }).catch(function (err) {
+    showError(messageForError(err));
+  });
+});
+
+startOverButton.addEventListener('click', function () {
+  fileInput.value = '';
+  clearError();
+  summaryList.innerHTML = '';
+  testContainer.innerHTML = '';
+  fileNameOut.textContent = '';
+  resultsPanel.hidden = true;
+  uploadPanel.hidden = false;
+  fileInput.focus();
+});
+
+fileInput.addEventListener('change', clearError);
+
+</script>
+</body>
+</html>
