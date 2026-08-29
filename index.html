@@ -232,7 +232,7 @@ footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 </main>
 
 <footer>
-  <p>Two tests so far: document title and document language. More to come.</p>
+  <p>Three tests so far: document title, document language and headings. More to come.</p>
 </footer>
 </div>
 
@@ -484,6 +484,224 @@ function testDocumentLanguage(docs) {
   return result;
 }
 
+/* ---------- Word style resolution ----------
+   A paragraph points at a styleId. The style carries the outline level and
+   the style name, and can inherit either through w:basedOn. Custom styles
+   like "Section title" are real headings if they resolve to an outline
+   level, so the outline level is the primary signal and the name is the
+   cross-check. */
+
+function buildStyleIndex(stylesDoc) {
+  var index = {};
+  elements(stylesDoc, NS.w, 'style').forEach(function (style) {
+    var id = attr(style, NS.w, 'styleId');
+    if (!id) return;
+    var nameEl = elements(style, NS.w, 'name')[0];
+    var basedOnEl = elements(style, NS.w, 'basedOn')[0];
+    var outlineEl = elements(style, NS.w, 'outlineLvl')[0];
+    index[id] = {
+      id: id,
+      name: nameEl ? attr(nameEl, NS.w, 'val') : null,
+      basedOn: basedOnEl ? attr(basedOnEl, NS.w, 'val') : null,
+      outlineLvl: outlineEl ? attr(outlineEl, NS.w, 'val') : null
+    };
+  });
+  return index;
+}
+
+/* Word writes outline level 0-8 for headings. 9 means body text. */
+function outlineLevelToHeading(value) {
+  if (value === null || value === undefined || value === '') return null;
+  var num = parseInt(value, 10);
+  if (isNaN(num) || num < 0 || num > 8) return null;
+  return num + 1;
+}
+
+/* Matches the canonical English style name Word stores, e.g. "heading 3". */
+function headingLevelFromName(name) {
+  if (!name) return null;
+  var match = /^heading\s*([1-9])$/i.exec(name.trim());
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function displayStyleName(name) {
+  var level = headingLevelFromName(name);
+  return level ? 'Heading ' + level : name;
+}
+
+function resolveStyle(index, styleId) {
+  var resolved = { name: null, outlineLvl: null, inheritedFrom: null };
+  var seen = {};
+  var current = styleId;
+  var depth = 0;
+
+  while (current && index[current] && !seen[current] && depth < 20) {
+    seen[current] = true;
+    var style = index[current];
+    if (resolved.name === null) resolved.name = style.name;
+    if (resolved.outlineLvl === null && style.outlineLvl !== null) {
+      resolved.outlineLvl = style.outlineLvl;
+      if (current !== styleId) resolved.inheritedFrom = style.name || current;
+    }
+    current = style.basedOn;
+    depth++;
+  }
+  return resolved;
+}
+
+function paragraphText(paragraph) {
+  var parts = [];
+  elements(paragraph, NS.w, 't').forEach(function (t) {
+    var node = t.parentNode;
+    var deleted = false;
+    while (node && node !== paragraph) {
+      if (node.localName === 'del') { deleted = true; break; }
+      node = node.parentNode;
+    }
+    if (!deleted) parts.push(textOf(t));
+  });
+  return parts.join('');
+}
+
+function collectHeadings(documentDoc, styleIndex) {
+  var headings = [];
+  elements(documentDoc, NS.w, 'p').forEach(function (paragraph, position) {
+    var pPr = elements(paragraph, NS.w, 'pPr')[0];
+    if (!pPr) return;
+
+    var styleEl = elements(pPr, NS.w, 'pStyle')[0];
+    var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
+    var directOutlineEl = elements(pPr, NS.w, 'outlineLvl')[0];
+    var directOutline = directOutlineEl ? attr(directOutlineEl, NS.w, 'val') : null;
+
+    var resolved = styleId ? resolveStyle(styleIndex, styleId) : { name: null, outlineLvl: null, inheritedFrom: null };
+    var nameLevel = headingLevelFromName(resolved.name);
+    var level = nameLevel
+      || outlineLevelToHeading(directOutline)
+      || outlineLevelToHeading(resolved.outlineLvl);
+
+    if (!level) return;
+
+    headings.push({
+      level: level,
+      text: paragraphText(paragraph).trim(),
+      styleName: resolved.name || styleId || 'unnamed style',
+      styleId: styleId,
+      isBuiltIn: nameLevel !== null,
+      inheritedFrom: resolved.inheritedFrom,
+      position: position
+    });
+  });
+  return headings;
+}
+
+/* Test 3: headings
+   Deterministic: heading styles are present, no level is skipped, no heading
+   is empty. Not deterministic: whether text that looks like a heading was
+   ever styled as one. Manual review. */
+function testHeadings(docs) {
+  var documentDoc = docs['word/document.xml'];
+  var stylesDoc = docs['word/styles.xml'];
+  var result = {
+    id: 'headings',
+    name: 'Headings',
+    summary: 'Checks whether real Word heading styles are used, in order, and not left empty.',
+    items: [],
+    note: null
+  };
+
+  if (!documentDoc) {
+    result.status = 'fail';
+    result.detail = 'This file has no word/document.xml part, so no content could be read.';
+    return result;
+  }
+
+  var styleIndex = buildStyleIndex(stylesDoc);
+  var headings = collectHeadings(documentDoc, styleIndex);
+
+  if (!headings.length) {
+    result.status = 'review';
+    result.detail = 'No Word heading styles were found in this document.';
+    result.note = 'Nothing in this document uses a heading style, so it has no structure a screen reader can navigate. Short documents may legitimately have no headings. Whether text here should have been styled as a heading needs <strong>manual review</strong>.';
+    return result;
+  }
+
+  var empties = 0;
+  var skips = 0;
+  var previousLevel = null;
+
+  headings.forEach(function (heading) {
+    var flags = [];
+    if (!heading.text) { flags.push('No text'); empties++; }
+    if (previousLevel !== null && heading.level > previousLevel + 1) {
+      flags.push('Level skipped, ' + previousLevel + ' to ' + heading.level);
+      skips++;
+    }
+    previousLevel = heading.level;
+
+    heading.flags = flags;
+  });
+
+  var levelOnes = headings.filter(function (h) { return h.level === 1; }).length;
+  var customStyles = headings.filter(function (h) { return !h.isBuiltIn; });
+
+  /* Information first, then the outline itself. */
+  if (levelOnes === 0) {
+    result.items.push({
+      label: 'For review', neutral: true,
+      value: 'No heading 1 in this document. The first heading is level ' + headings[0].level + '.'
+    });
+  } else if (levelOnes > 1) {
+    result.items.push({
+      label: 'For review', neutral: true,
+      value: levelOnes + ' heading 1s in this document. That can be correct, it depends on the document.'
+    });
+  }
+
+  customStyles.forEach(function (heading) {
+    result.items.push({
+      label: 'Custom style', neutral: true,
+      value: '"' + heading.styleName + '" is treated as heading ' + heading.level +
+        (heading.inheritedFrom ? ', outline level inherited from "' + displayStyleName(heading.inheritedFrom) + '"' : ', from its outline level')
+    });
+  });
+
+  var shown = headings.slice(0, 30);
+  shown.forEach(function (heading) {
+    var item = {
+      label: 'Heading ' + heading.level,
+      value: heading.text || '(no text)'
+    };
+    if (heading.flags.length) {
+      item.flag = true;
+      item.flags = heading.flags;
+    }
+    result.items.push(item);
+  });
+  if (headings.length > shown.length) {
+    result.items.push({
+      label: 'And more', neutral: true,
+      value: (headings.length - shown.length) + ' further headings not listed here'
+    });
+  }
+
+  var problems = [];
+  if (skips) problems.push(skips === 1 ? 'one skipped level' : skips + ' skipped levels');
+  if (empties) problems.push(empties === 1 ? 'one empty heading' : empties + ' empty headings');
+
+  var count = headings.length === 1 ? '1 heading found' : headings.length + ' headings found';
+  if (problems.length) {
+    result.status = 'fail';
+    result.detail = count + ', with ' + problems.join(' and ') + '.';
+  } else {
+    result.status = 'pass';
+    result.detail = count + ', in order, none empty.';
+  }
+
+  result.note = 'This test only sees text that uses a heading style. It can\u2019t see a paragraph that was made large and bold instead of being styled as a heading, and it can\u2019t judge whether a heading describes the section it sits above. Both need <strong>manual review</strong>.';
+  return result;
+}
+
 var WANTED_PARTS = [
   'docProps/core.xml',
   'word/settings.xml',
@@ -491,7 +709,7 @@ var WANTED_PARTS = [
   'word/document.xml'
 ];
 
-var TESTS = [testDocumentTitle, testDocumentLanguage];
+var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings];
 
 function runTests(buffer, parseXml) {
   return readDocxParts(buffer, WANTED_PARTS).then(function (read) {
@@ -574,7 +792,10 @@ function renderResult(result, number) {
       var itemClass = 'result-item' + (item.flag ? ' result-item--flag' : '');
       html += '<li class="' + itemClass + '">';
       if (item.flag) {
-        html += '<span class="flag-badge">' + escapeHtml(item.flagLabel || 'Problem') + '</span>';
+        html += '<span class="result-item__label">' + escapeHtml(item.label) + '</span>';
+        (item.flags || [item.flagLabel || 'Problem']).forEach(function (flag) {
+          html += '<span class="flag-badge">' + escapeHtml(flag) + '</span>';
+        });
       } else if (item.neutral) {
         html += '<span class="badge-neutral">' + escapeHtml(item.label) + '</span>';
       } else {
