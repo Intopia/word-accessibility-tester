@@ -1056,6 +1056,9 @@ function buildNumberingIndex(numberingDoc) {
   });
 
   return {
+    abstractFor: function (numId) {
+      return numToAbstract[numId] || null;
+    },
     formatFor: function (numId, ilvl) {
       var abstractId = numToAbstract[numId];
       if (!abstractId || !abstractFormats[abstractId]) return null;
@@ -1171,6 +1174,7 @@ function testLists(docs) {
   /* real lists, grouped into blocks of neighbouring paragraphs sharing a numId */
   var blocks = [];
   var current = null;
+  var interrupted = false;
   paragraphs.forEach(function (paragraph) {
     if (paragraph.numbering) {
       if (current && current.numId === paragraph.numbering.numId) {
@@ -1181,13 +1185,16 @@ function testLists(docs) {
           numId: paragraph.numbering.numId,
           items: [paragraph],
           levels: {},
-          fromStyle: paragraph.fromStyle
+          fromStyle: paragraph.fromStyle,
+          precededByText: interrupted
         };
         current.levels[paragraph.numbering.ilvl || '0'] = true;
         blocks.push(current);
       }
+      interrupted = false;
     } else if (paragraph.text) {
       current = null;
+      interrupted = true;
     }
   });
 
@@ -1259,16 +1266,26 @@ function testLists(docs) {
     });
   });
 
-  var byNumId = {};
+  /* Word gives each part of a split list its own numId, but they keep
+     pointing at the same abstract numbering, so group on that. */
+  var byAbstract = {};
   blocks.forEach(function (block) {
-    byNumId[block.numId] = (byNumId[block.numId] || 0) + 1;
+    var key = numbering.abstractFor(block.numId) || 'num:' + block.numId;
+    if (!byAbstract[key]) byAbstract[key] = [];
+    byAbstract[key].push(block);
   });
-  Object.keys(byNumId).forEach(function (numId) {
-    if (byNumId[numId] > 1) {
+  Object.keys(byAbstract).forEach(function (key) {
+    var group = byAbstract[key];
+    var separated = group.filter(function (block, index) {
+      return index > 0 && block.precededByText;
+    }).length;
+    if (group.length > 1 && separated) {
       findings.push('split');
+      var count = group.reduce(function (sum, block) { return sum + block.items.length; }, 0);
       result.items.push({
         label: 'For review', neutral: true,
-        value: 'One list is split into ' + byNumId[numId] + ' blocks by other content. If it was meant to be a single list, it will be read as several.'
+        value: group.length + ' lists here share the same numbering, ' + count + ' items in total, separated by other content. ' +
+          'If that was meant to be one list, it will be read as ' + group.length + ' separate lists.'
       });
     }
   });
