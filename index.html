@@ -232,7 +232,7 @@ footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 </main>
 
 <footer>
-  <p>Three tests so far: document title, document language and headings. More to come.</p>
+  <p>Four tests so far: document title, document language, headings and lists. More to come.</p>
 </footer>
 </div>
 
@@ -499,11 +499,13 @@ function buildStyleIndex(stylesDoc) {
     var nameEl = elements(style, NS.w, 'name')[0];
     var basedOnEl = elements(style, NS.w, 'basedOn')[0];
     var outlineEl = elements(style, NS.w, 'outlineLvl')[0];
+    var pPrEl = elements(style, NS.w, 'pPr')[0];
     index[id] = {
       id: id,
       name: nameEl ? attr(nameEl, NS.w, 'val') : null,
       basedOn: basedOnEl ? attr(basedOnEl, NS.w, 'val') : null,
-      outlineLvl: outlineEl ? attr(outlineEl, NS.w, 'val') : null
+      outlineLvl: outlineEl ? attr(outlineEl, NS.w, 'val') : null,
+      numbering: numberingFromProperties(pPrEl)
     };
   });
   return index;
@@ -551,15 +553,21 @@ function resolveStyle(index, styleId) {
 
 function paragraphText(paragraph) {
   var parts = [];
-  elements(paragraph, NS.w, 't').forEach(function (t) {
-    var node = t.parentNode;
-    var deleted = false;
-    while (node && node !== paragraph) {
-      if (node.localName === 'del') { deleted = true; break; }
-      node = node.parentNode;
+  (function walk(node) {
+    for (var child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      var name = child.localName;
+      if (name === 'del') continue;          /* deleted with track changes */
+      if (name === 't') { parts.push(textOf(child)); continue; }
+      if (name === 'tab') { parts.push(' '); continue; }
+      if (name === 'br') {
+        var type = attr(child, NS.w, 'type');
+        if (type === null || type === 'textWrapping') parts.push(' / ');
+        continue;
+      }
+      walk(child);
     }
-    if (!deleted) parts.push(textOf(t));
-  });
+  })(paragraph);
   return parts.join('');
 }
 
@@ -658,11 +666,20 @@ function testHeadings(docs) {
     });
   }
 
+  var seenCustom = {};
   customStyles.forEach(function (heading) {
+    var key = heading.styleId || heading.styleName;
+    if (seenCustom[key]) { seenCustom[key].count++; return; }
+    seenCustom[key] = { heading: heading, count: 1 };
+  });
+  Object.keys(seenCustom).forEach(function (key) {
+    var entry = seenCustom[key];
+    var heading = entry.heading;
     result.items.push({
       label: 'Custom style', neutral: true,
       value: '"' + heading.styleName + '" is treated as heading ' + heading.level +
-        (heading.inheritedFrom ? ', outline level inherited from "' + displayStyleName(heading.inheritedFrom) + '"' : ', from its outline level')
+        (heading.inheritedFrom ? ', outline level inherited from "' + displayStyleName(heading.inheritedFrom) + '"' : ', from its own outline level') +
+        (entry.count > 1 ? ', used ' + entry.count + ' times' : '')
     });
   });
 
@@ -670,7 +687,7 @@ function testHeadings(docs) {
   shown.forEach(function (heading) {
     var item = {
       label: 'Heading ' + heading.level,
-      value: heading.text || '(no text)'
+      value: heading.text
     };
     if (heading.flags.length) {
       item.flag = true;
@@ -702,14 +719,598 @@ function testHeadings(docs) {
   return result;
 }
 
+/* ---------- lists ----------
+   A real list paragraph carries w:numPr with a non-zero w:numId, either
+   directly or through its style. The format (bullet vs numbered) lives in
+   word/numbering.xml: numId -> abstractNumId -> the w:lvl for that indent
+   level -> w:numFmt. */
+
+function buildNumberingIndex(numberingDoc) {
+  var index = { numToAbstract: {}, formats: {} };
+  if (!numberingDoc) return index;
+
+  elements(numberingDoc, NS.w, 'num').forEach(function (num) {
+    var numId = attr(num, NS.w, 'numId');
+    var abstractEl = elements(num, NS.w, 'abstractNumId')[0];
+    var abstractId = abstractEl ? attr(abstractEl, NS.w, 'val') : null;
+    if (numId && abstractId) index.numToAbstract[numId] = abstractId;
+  });
+
+  elements(numberingDoc, NS.w, 'abstractNum').forEach(function (abstractNum) {
+    var abstractId = attr(abstractNum, NS.w, 'abstractNumId');
+    if (!abstractId) return;
+    var levels = {};
+    elements(abstractNum, NS.w, 'lvl').forEach(function (lvl) {
+      var ilvl = attr(lvl, NS.w, 'ilvl');
+      var fmtEl = elements(lvl, NS.w, 'numFmt')[0];
+      if (ilvl !== null && fmtEl) levels[ilvl] = attr(fmtEl, NS.w, 'val');
+    });
+    index.formats[abstractId] = levels;
+  });
+  return index;
+}
+
+function listFormat(numberingIndex, numId, ilvl) {
+  var abstractId = numberingIndex.numToAbstract[numId];
+  if (!abstractId) return null;
+  var levels = numberingIndex.formats[abstractId] || {};
+  return levels[ilvl || '0'] || levels['0'] || null;
+}
+
+function describeFormat(format) {
+  if (!format) return 'List';
+  if (format === 'bullet') return 'Bulleted list';
+  if (format === 'none') return 'List';
+  return 'Numbered list';
+}
+
+/* numPr can sit on the paragraph or be inherited from its style. */
+function numberingOfStyle(index, styleId) {
+  var seen = {};
+  var current = styleId;
+  var depth = 0;
+  while (current && index[current] && !seen[current] && depth < 20) {
+    seen[current] = true;
+    var raw = index[current].element;
+    if (raw) {
+      var numPr = elements(raw, NS.w, 'numPr')[0];
+      if (numPr) {
+        var numIdEl = elements(numPr, NS.w, 'numId')[0];
+        var ilvlEl = elements(numPr, NS.w, 'ilvl')[0];
+        var numId = numIdEl ? attr(numIdEl, NS.w, 'val') : null;
+        if (numId && numId !== '0') {
+          return { numId: numId, ilvl: ilvlEl ? attr(ilvlEl, NS.w, 'val') : '0', fromStyle: index[current].name || current };
+        }
+      }
+    }
+    current = index[current].basedOn;
+    depth++;
+  }
+  return null;
+}
+
+var BULLET_GLYPHS = '\u2022\u25E6\u25AA\u00B7\u2023\u2043\u25CF\u25A0';
+
+/* Returns the kind of typed list marker a paragraph starts with, or null.
+   Numbers are capped at two digits so a paragraph opening with a year is
+   not mistaken for a list item. */
+function typedMarker(text) {
+  var match = /^(\S{1,6})\s+(\S.*)$/.exec(text);
+  if (!match) return null;
+  var token = match[1];
+
+  if (BULLET_GLYPHS.indexOf(token) !== -1 && token.length === 1) return 'glyph';
+  if (/^[-*\u2013\u2014]$/.test(token)) return 'dash';
+
+  var wrapped = /^\(.+\)$/.test(token);
+  var closed = /[.)]$/.test(token);
+  if (!wrapped && !closed) return null;
+
+  var core = token.replace(/^\(/, '').replace(/[.)]$/, '');
+  if (/^\d{1,2}$/.test(core)) return 'number';
+  if (/^[ivxlcdm]{2,4}$/i.test(core)) return 'roman';
+  if (/^[a-z]$/i.test(core)) return 'letter';
+  return null;
+}
+
+function hasLineBreak(paragraph) {
+  return elements(paragraph, NS.w, 'br').some(function (br) {
+    var type = attr(br, NS.w, 'type');
+    return type === null || type === 'textWrapping';
+  });
+}
+
+function collectParagraphs(documentDoc, styleIndex, numberingIndex) {
+  var rows = [];
+  elements(documentDoc, NS.w, 'p').forEach(function (paragraph) {
+    var pPr = elements(paragraph, NS.w, 'pPr')[0];
+    var styleEl = pPr ? elements(pPr, NS.w, 'pStyle')[0] : null;
+    var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
+
+    var numId = null;
+    var ilvl = '0';
+    var fromStyle = null;
+
+    var numPr = pPr ? elements(pPr, NS.w, 'numPr')[0] : null;
+    if (numPr) {
+      var numIdEl = elements(numPr, NS.w, 'numId')[0];
+      var ilvlEl = elements(numPr, NS.w, 'ilvl')[0];
+      var direct = numIdEl ? attr(numIdEl, NS.w, 'val') : null;
+      if (direct && direct !== '0') {
+        numId = direct;
+        ilvl = ilvlEl ? attr(ilvlEl, NS.w, 'val') : '0';
+      }
+    }
+    if (!numId && styleId) {
+      var inherited = numberingOfStyle(styleIndex, styleId);
+      if (inherited) {
+        numId = inherited.numId;
+        ilvl = inherited.ilvl;
+        fromStyle = inherited.fromStyle;
+      }
+    }
+
+    var text = paragraphText(paragraph).trim();
+    rows.push({
+      text: text,
+      isList: !!numId,
+      numId: numId,
+      ilvl: ilvl || '0',
+      fromStyle: fromStyle,
+      format: numId ? listFormat(numberingIndex, numId, ilvl || '0') : null,
+      hasBreak: hasLineBreak(paragraph),
+      marker: numId ? null : typedMarker(text)
+    });
+  });
+  return rows;
+}
+
+/* Test 4: lists
+   Deterministic: which paragraphs carry real list numbering, and which
+   plain paragraphs open with something that looks like a typed marker.
+   Not deterministic: whether a typed marker was meant to be a list.
+   Manual review. */
+function testLists(docs) {
+  var documentDoc = docs['word/document.xml'];
+  var result = {
+    id: 'lists',
+    name: 'Lists',
+    summary: 'Checks whether lists use real Word list formatting, and looks for lists that were typed by hand.',
+    items: [],
+    note: null
+  };
+
+  if (!documentDoc) {
+    result.status = 'fail';
+    result.detail = 'This file has no word/document.xml part, so no content could be read.';
+    return result;
+  }
+
+  var styleIndex = buildStyleIndex(docs['word/styles.xml']);
+  var numberingIndex = buildNumberingIndex(docs['word/numbering.xml']);
+  var rows = collectParagraphs(documentDoc, styleIndex, numberingIndex);
+
+  /* group consecutive real list paragraphs that share a numId */
+  var groups = [];
+  var current = null;
+  rows.forEach(function (row, index) {
+    if (!row.isList) { current = null; return; }
+    if (!current || current.numId !== row.numId) {
+      current = { numId: row.numId, format: row.format, items: [], levels: {}, start: index, fromStyle: row.fromStyle };
+      groups.push(current);
+    }
+    current.items.push(row);
+    current.levels[row.ilvl] = true;
+    current.end = index;
+  });
+
+  /* runs of consecutive typed markers */
+  var typedRuns = [];
+  var run = null;
+  rows.forEach(function (row, index) {
+    if (!row.marker) { run = null; return; }
+    if (!run) { run = { items: [], start: index }; typedRuns.push(run); }
+    run.items.push(row);
+  });
+
+  /* A single stray marker is only reported when it is a true bullet glyph,
+     which has no other use in running text. Everything else needs two or
+     more in a row before it is worth flagging. */
+  var flaggedRuns = typedRuns.filter(function (r) {
+    return r.items.length > 1 || r.items[0].marker === 'glyph';
+  });
+
+  var brokenItems = [];
+  groups.forEach(function (group) {
+    group.items.forEach(function (item) {
+      if (item.hasBreak) brokenItems.push(item);
+    });
+  });
+
+  var splitLists = [];
+  for (var i = 1; i < groups.length; i++) {
+    var previous = groups[i - 1];
+    var group = groups[i];
+    var between = rows.slice(previous.end + 1, group.start);
+    var onlyEmpty = between.every(function (row) { return !row.text; });
+    var sameShape = numberingIndex.numToAbstract[previous.numId] === numberingIndex.numToAbstract[group.numId];
+    if (previous.numId !== group.numId && sameShape && (between.length === 0 || onlyEmpty || between.length === 1)) {
+      splitLists.push({ first: previous, second: group });
+    }
+  }
+
+  var levelJumps = [];
+  groups.forEach(function (group) {
+    var previousLevel = null;
+    group.items.forEach(function (item) {
+      var level = parseInt(item.ilvl, 10) || 0;
+      if (previousLevel !== null && level > previousLevel + 1) levelJumps.push(group);
+      previousLevel = level;
+    });
+  });
+
+  if (!groups.length && !flaggedRuns.length) {
+    result.status = 'untested';
+    result.detail = 'No lists and no typed list markers were found in this document.';
+    result.note = 'There was nothing here to test. Whether any content should have been a list needs <strong>manual review</strong>.';
+    return result;
+  }
+
+  flaggedRuns.forEach(function (r) {
+    result.items.push({
+      label: 'Typed list',
+      flag: true,
+      flags: ['Not a real list'],
+      value: r.items.length + (r.items.length === 1 ? ' paragraph starts' : ' paragraphs start') +
+        ' with a list marker but carries no list formatting, beginning "' + r.items[0].text.slice(0, 60) + '"'
+    });
+  });
+
+  brokenItems.forEach(function (item) {
+    result.items.push({
+      label: 'List item',
+      flag: true,
+      flags: ['Line break inside item'],
+      value: '"' + item.text.slice(0, 60) + '"'
+    });
+  });
+
+  splitLists.forEach(function (split) {
+    result.items.push({
+      label: 'Split list',
+      flag: true,
+      flags: ['Two lists, not one'],
+      value: 'A list of ' + split.first.items.length + ' items is followed by a separate list of ' +
+        split.second.items.length + ' items in the same format'
+    });
+  });
+
+  levelJumps.forEach(function () {
+    result.items.push({
+      label: 'Nesting',
+      flag: true,
+      flags: ['Level skipped'],
+      value: 'A list jumps more than one indent level at once'
+    });
+  });
+
+  groups.forEach(function (group) {
+    var levels = Object.keys(group.levels).length;
+    var parts = [group.items.length + (group.items.length === 1 ? ' item' : ' items')];
+    if (levels > 1) parts.push(levels + ' levels');
+    if (group.items.length === 1) parts.push('a list of one item is worth a look');
+    if (group.fromStyle) parts.push('numbering comes from the style "' + group.fromStyle + '"');
+    result.items.push({
+      label: describeFormat(group.format),
+      neutral: true,
+      value: parts.join(', ')
+    });
+  });
+
+  var problems = [];
+  if (flaggedRuns.length) problems.push(flaggedRuns.length === 1 ? 'one typed list' : flaggedRuns.length + ' typed lists');
+  if (brokenItems.length) problems.push(brokenItems.length === 1 ? 'one item split by a line break' : brokenItems.length + ' items split by line breaks');
+  if (splitLists.length) problems.push(splitLists.length === 1 ? 'one split list' : splitLists.length + ' split lists');
+  if (levelJumps.length) problems.push('a skipped nesting level');
+
+  var listCount = groups.length === 1 ? '1 real list' : groups.length + ' real lists';
+
+  if (problems.length) {
+    result.status = 'review';
+    result.detail = listCount + ' found, plus ' + problems.join(', ') + '.';
+    result.note = 'Each item above is a pattern, not a verdict. A paragraph can open with a number or a dash for reasons that have nothing to do with lists, and a line break inside an item is sometimes deliberate. Confirming each one needs <strong>manual review</strong>.';
+  } else {
+    result.status = 'pass';
+    result.detail = listCount + ' found, all using real Word list formatting.';
+    result.note = 'This test confirms these lists carry real list formatting. It can\u2019t tell whether the grouping makes sense, or whether other content should have been a list too. That needs <strong>manual review</strong>.';
+  }
+  return result;
+}
+
+/* ---------- numbering ----------
+   A real list paragraph carries w:numPr, either directly or through its
+   paragraph style. numId 0 means numbering has been removed, so it is not
+   a list. word/numbering.xml maps numId to a format, which is how we tell
+   a bulleted list from a numbered one. */
+
+function buildNumberingIndex(numberingDoc) {
+  var abstractFormats = {};
+  var numToAbstract = {};
+
+  elements(numberingDoc, NS.w, 'abstractNum').forEach(function (abstractNum) {
+    var id = attr(abstractNum, NS.w, 'abstractNumId');
+    if (!id) return;
+    var levels = {};
+    elements(abstractNum, NS.w, 'lvl').forEach(function (lvl) {
+      var ilvl = attr(lvl, NS.w, 'ilvl');
+      var fmtEl = elements(lvl, NS.w, 'numFmt')[0];
+      if (ilvl !== null) levels[ilvl] = fmtEl ? attr(fmtEl, NS.w, 'val') : null;
+    });
+    abstractFormats[id] = levels;
+  });
+
+  elements(numberingDoc, NS.w, 'num').forEach(function (num) {
+    var numId = attr(num, NS.w, 'numId');
+    var abstractEl = elements(num, NS.w, 'abstractNumId')[0];
+    if (numId && abstractEl) numToAbstract[numId] = attr(abstractEl, NS.w, 'val');
+  });
+
+  return {
+    formatFor: function (numId, ilvl) {
+      var abstractId = numToAbstract[numId];
+      if (!abstractId || !abstractFormats[abstractId]) return null;
+      var levels = abstractFormats[abstractId];
+      return levels[ilvl || '0'] || levels['0'] || null;
+    }
+  };
+}
+
+function numberingFromProperties(pPr) {
+  if (!pPr) return null;
+  var numPr = elements(pPr, NS.w, 'numPr')[0];
+  if (!numPr) return null;
+  var numIdEl = elements(numPr, NS.w, 'numId')[0];
+  var ilvlEl = elements(numPr, NS.w, 'ilvl')[0];
+  var numId = numIdEl ? attr(numIdEl, NS.w, 'val') : null;
+  if (numId === null) return null;
+  return { numId: numId, ilvl: ilvlEl ? attr(ilvlEl, NS.w, 'val') : '0' };
+}
+
+function styleNumbering(index, styleId) {
+  var seen = {};
+  var current = styleId;
+  var depth = 0;
+  while (current && index[current] && !seen[current] && depth < 20) {
+    seen[current] = true;
+    if (index[current].numbering) return index[current].numbering;
+    current = index[current].basedOn;
+    depth++;
+  }
+  return null;
+}
+
+/* ---------- typed list markers ----------
+   Matched on the literal text of a paragraph that is not a real list.
+   A single line starting "1990. That was the year" is not enough to flag,
+   so a run of two or more neighbouring paragraphs using the same kind of
+   marker is required. */
+
+var BULLET_MARKER = /^([-\u2013\u2014*\u2022\u25aa\u25cf\u25e6o])[ \t]+\S/;
+var NUMBER_MARKER = /^(\d{1,2})[.)][ \t]+\S/;
+var LETTER_MARKER = /^([a-z]|[ivx]{1,4})[.)][ \t]+\S/i;
+
+function markerFamily(text) {
+  if (!text) return null;
+  if (BULLET_MARKER.test(text)) return 'bullet';
+  if (NUMBER_MARKER.test(text)) return 'number';
+  if (LETTER_MARKER.test(text)) return 'letter';
+  return null;
+}
+
+function collectParagraphs(documentDoc, styleIndex) {
+  return elements(documentDoc, NS.w, 'p').map(function (paragraph, position) {
+    var pPr = elements(paragraph, NS.w, 'pPr')[0];
+    var styleEl = pPr ? elements(pPr, NS.w, 'pStyle')[0] : null;
+    var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
+    var resolved = styleId ? resolveStyle(styleIndex, styleId) : { name: null, outlineLvl: null };
+    var directOutlineEl = pPr ? elements(pPr, NS.w, 'outlineLvl')[0] : null;
+
+    var numbering = numberingFromProperties(pPr) || (styleId ? styleNumbering(styleIndex, styleId) : null);
+    if (numbering && numbering.numId === '0') numbering = null;
+
+    /* w:br with no type is a line break inside the paragraph.
+       A page or column break is a different thing and is ignored. */
+    var lineBreaks = elements(paragraph, NS.w, 'br').filter(function (br) {
+      var type = attr(br, NS.w, 'type');
+      return type === null || type === 'textWrapping';
+    }).length;
+
+    return {
+      position: position,
+      text: paragraphText(paragraph).trim(),
+      styleName: resolved.name || styleId,
+      headingLevel: headingLevelFromName(resolved.name)
+        || outlineLevelToHeading(directOutlineEl ? attr(directOutlineEl, NS.w, 'val') : null)
+        || outlineLevelToHeading(resolved.outlineLvl),
+      numbering: numbering,
+      fromStyle: !numberingFromProperties(pPr) && !!numbering,
+      lineBreaks: lineBreaks
+    };
+  });
+}
+
+function shorten(text, limit) {
+  if (!text) return '';
+  return text.length > limit ? text.slice(0, limit - 1) + '\u2026' : text;
+}
+
+/* Test 4: lists
+   Deterministic: which paragraphs are real Word lists, and which are plain
+   paragraphs that begin with a typed marker. Not deterministic: whether a
+   typed marker was meant as a list. Manual review. */
+function testLists(docs) {
+  var documentDoc = docs['word/document.xml'];
+  var result = {
+    id: 'lists',
+    name: 'Lists',
+    summary: 'Checks whether lists use real Word list formatting rather than typed bullets or numbers.',
+    items: [],
+    note: null
+  };
+
+  if (!documentDoc) {
+    result.status = 'fail';
+    result.detail = 'This file has no word/document.xml part, so no content could be read.';
+    return result;
+  }
+
+  var styleIndex = buildStyleIndex(docs['word/styles.xml']);
+  var numbering = buildNumberingIndex(docs['word/numbering.xml']);
+  var paragraphs = collectParagraphs(documentDoc, styleIndex);
+
+  /* real lists, grouped into blocks of neighbouring paragraphs sharing a numId */
+  var blocks = [];
+  var current = null;
+  paragraphs.forEach(function (paragraph) {
+    if (paragraph.numbering) {
+      if (current && current.numId === paragraph.numbering.numId) {
+        current.items.push(paragraph);
+        current.levels[paragraph.numbering.ilvl || '0'] = true;
+      } else {
+        current = {
+          numId: paragraph.numbering.numId,
+          items: [paragraph],
+          levels: {},
+          fromStyle: paragraph.fromStyle
+        };
+        current.levels[paragraph.numbering.ilvl || '0'] = true;
+        blocks.push(current);
+      }
+    } else if (paragraph.text) {
+      current = null;
+    }
+  });
+
+  /* typed markers, grouped into runs of two or more of the same kind */
+  var fakeGroups = [];
+  var run = null;
+  paragraphs.forEach(function (paragraph) {
+    var family = paragraph.numbering || paragraph.headingLevel ? null : markerFamily(paragraph.text);
+    if (family) {
+      if (run && run.family === family) {
+        run.items.push(paragraph);
+      } else {
+        run = { family: family, items: [paragraph] };
+        fakeGroups.push(run);
+      }
+    } else if (paragraph.text || paragraph.numbering) {
+      run = null;
+    }
+  });
+  fakeGroups = fakeGroups.filter(function (group) { return group.items.length > 1; });
+
+  var totalItems = blocks.reduce(function (sum, block) { return sum + block.items.length; }, 0);
+
+  if (!blocks.length && !fakeGroups.length) {
+    result.status = 'untested';
+    result.detail = 'No lists were found in this document, and nothing looks like a typed list.';
+    return result;
+  }
+
+  /* real lists, reported so the outcome is visible either way */
+  blocks.forEach(function (block) {
+    var format = numbering.formatFor(block.numId, Object.keys(block.levels).sort()[0]);
+    var kind = format === 'bullet' ? 'Bulleted list' : (format ? 'Numbered list' : 'List');
+    var levelCount = Object.keys(block.levels).length;
+    result.items.push({
+      label: 'Real list', neutral: true,
+      value: kind + ', ' + block.items.length + (block.items.length === 1 ? ' item' : ' items') +
+        (levelCount > 1 ? ', ' + levelCount + ' levels' : '') +
+        (block.fromStyle ? ', numbering comes from its paragraph style' : '') +
+        ': ' + shorten(block.items[0].text, 40)
+    });
+  });
+
+  var findings = [];
+
+  fakeGroups.forEach(function (group) {
+    findings.push('typed');
+    group.items.forEach(function (paragraph) {
+      result.items.push({
+        label: 'Typed as text',
+        value: shorten(paragraph.text, 70),
+        flag: true,
+        flags: [group.family === 'bullet' ? 'Typed bullet' : 'Typed number']
+      });
+    });
+  });
+
+  blocks.forEach(function (block) {
+    block.items.forEach(function (paragraph) {
+      if (paragraph.lineBreaks) {
+        findings.push('breaks');
+        result.items.push({
+          label: 'List item',
+          value: shorten(paragraph.text, 70),
+          flag: true,
+          flags: [paragraph.lineBreaks === 1 ? 'Contains a line break' : 'Contains ' + paragraph.lineBreaks + ' line breaks']
+        });
+      }
+    });
+  });
+
+  var byNumId = {};
+  blocks.forEach(function (block) {
+    byNumId[block.numId] = (byNumId[block.numId] || 0) + 1;
+  });
+  Object.keys(byNumId).forEach(function (numId) {
+    if (byNumId[numId] > 1) {
+      findings.push('split');
+      result.items.push({
+        label: 'For review', neutral: true,
+        value: 'One list is split into ' + byNumId[numId] + ' blocks by other content. If it was meant to be a single list, it will be read as several.'
+      });
+    }
+  });
+
+  blocks.forEach(function (block) {
+    /* a single item already flagged for line breaks is covered by that flag */
+    if (block.items.length === 1 && !block.items[0].lineBreaks) {
+      findings.push('single');
+      result.items.push({
+        label: 'For review', neutral: true,
+        value: 'A list with a single item: ' + shorten(block.items[0].text, 40) + '. That is sometimes deliberate.'
+      });
+    }
+  });
+
+  var described = [];
+  if (blocks.length) {
+    described.push(blocks.length + (blocks.length === 1 ? ' real list' : ' real lists') +
+      ' with ' + totalItems + (totalItems === 1 ? ' item' : ' items'));
+  }
+  if (fakeGroups.length) {
+    described.push(fakeGroups.length + (fakeGroups.length === 1 ? ' group' : ' groups') + ' of typed list markers');
+  }
+
+  result.status = findings.length ? 'review' : 'pass';
+  result.detail = described.join(', ') + '.';
+
+  result.note = findings.indexOf('typed') !== -1
+    ? 'Paragraphs flagged here start with a bullet or number typed as text, so a screen reader announces the characters and not a list. Check them and apply real list formatting where they were meant to be lists. Anything else flagged, and whether each one really is a list, needs <strong>manual review</strong>.'
+    : 'This test can see which paragraphs use real list formatting. It can\u2019t tell whether the grouping makes sense for the content. Anything flagged needs <strong>manual review</strong>.';
+  return result;
+}
+
 var WANTED_PARTS = [
   'docProps/core.xml',
   'word/settings.xml',
   'word/styles.xml',
-  'word/document.xml'
+  'word/document.xml',
+  'word/numbering.xml'
 ];
 
-var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings];
+var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists];
 
 function runTests(buffer, parseXml) {
   return readDocxParts(buffer, WANTED_PARTS).then(function (read) {
@@ -801,7 +1402,9 @@ function renderResult(result, number) {
       } else {
         html += '<span class="result-item__label">' + escapeHtml(item.label) + '</span>';
       }
-      html += '<span class="result-item__value">' + escapeHtml(item.value) + '</span>';
+      if (item.value) {
+        html += '<span class="result-item__value">' + escapeHtml(item.value) + '</span>';
+      }
       html += '</li>';
     });
     html += '</ul>';
