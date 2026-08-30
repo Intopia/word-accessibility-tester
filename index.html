@@ -193,7 +193,7 @@ button.secondary { background: var(--panel); color: var(--ink); border-color: va
   border-radius: 0 var(--radius) var(--radius) 0;
 }
 .result-item__label { font-weight: 600; }
-.result-item__value { font-family: var(--font-mono); font-size: 0.95rem; word-break: break-word; }
+.result-item__value { word-break: break-word; }
 
 footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 </style>
@@ -232,7 +232,7 @@ footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 </main>
 
 <footer>
-  <p>Four tests so far: document title, document language, headings and lists. More to come.</p>
+  <p>Seven tests so far: document title, document language, headings, lists, image alt text, tables and links. More to come.</p>
 </footer>
 </div>
 
@@ -247,7 +247,13 @@ footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 var NS = {
   w: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
   dc: 'http://purl.org/dc/elements/1.1/',
-  cp: 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties'
+  cp: 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties',
+  wp: 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
+  pic: 'http://schemas.openxmlformats.org/drawingml/2006/picture',
+  adec: 'http://schemas.microsoft.com/office/drawing/2017/decorative',
+  a: 'http://schemas.openxmlformats.org/drawingml/2006/main',
+  rel: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+  pkgRel: 'http://schemas.openxmlformats.org/package/2006/relationships'
 };
 
 /* ---------- minimal zip reader ---------- */
@@ -324,8 +330,11 @@ function readEntryText(buffer, entry) {
   return Promise.reject(new Error('UNSUPPORTED_COMPRESSION_' + entry.method));
 }
 
-/* Reads the parts we care about. Returns { parts: {path: xmlString}, missing: [] } */
-function readDocxParts(buffer, wanted) {
+/* Headers, footers and notes are separate parts with unpredictable names,
+   so they are discovered from the zip rather than named up front. */
+var EXTRA_PARTS = /^word\/(header\d+|footer\d+|footnotes|endnotes)\.xml$/;
+
+function readDocxParts(buffer, wanted, extraPattern) {
   var entries;
   try {
     entries = readCentralDirectory(buffer);
@@ -336,9 +345,18 @@ function readDocxParts(buffer, wanted) {
     return Promise.reject(new Error('NOT_A_DOCX'));
   }
 
+  var paths = wanted.slice();
+  var patterns = extraPattern ? [].concat(extraPattern) : [];
+  if (patterns.length) {
+    Object.keys(entries).forEach(function (name) {
+      var wanted = patterns.some(function (pattern) { return pattern.test(name); });
+      if (wanted && paths.indexOf(name) === -1) paths.push(name);
+    });
+  }
+
   var parts = {};
   var missing = [];
-  var jobs = wanted.map(function (path) {
+  var jobs = paths.map(function (path) {
     if (!entries[path]) { missing.push(path); return Promise.resolve(); }
     return readEntryText(buffer, entries[path]).then(function (text) { parts[path] = text; });
   });
@@ -458,7 +476,7 @@ function testDocumentLanguage(docs) {
 
   if (!defaultLang && !otherLangs.length) {
     result.status = 'fail';
-    result.detail = 'No language is set anywhere in this document. Screen readers will fall back to the user\u2019s own default voice.';
+    result.detail = 'No language is set anywhere in this document.';
     return result;
   }
 
@@ -466,9 +484,9 @@ function testDocumentLanguage(docs) {
     result.status = 'review';
     result.detail = 'No document default language is set, but language is set on some content.';
     result.items = otherLangs.map(function (lang) {
-      return { label: 'Language found', value: lang, neutral: true };
+      return { label: 'Language', badges: ['Also used'], value: lang };
     });
-    result.note = 'Content that isn\u2019t covered by one of these will fall back to the reader\u2019s own default. Setting a document default fixes this. Confirming which content is affected needs <strong>manual review</strong>.';
+    result.note = 'This test can see which languages are set, not which content each one covers. That needs <strong>manual review</strong>.';
     return result;
   }
 
@@ -476,7 +494,7 @@ function testDocumentLanguage(docs) {
   result.detail = 'A default language is set for the document.';
   result.items = [{ label: 'Default language', value: defaultLang + ' \u2014 from ' + source }];
   otherLangs.forEach(function (lang) {
-    result.items.push({ label: 'Also used', value: lang, neutral: true });
+    result.items.push({ label: 'Language', badges: ['Also used'], value: lang });
   });
   result.note = otherLangs.length
     ? 'This test confirms a default language is set, and that other languages are used somewhere in the file. It can\u2019t confirm the tags match the actual content, or that every passage in another language is marked. That needs <strong>manual review</strong>.'
@@ -630,7 +648,7 @@ function testHeadings(docs) {
   if (!headings.length) {
     result.status = 'review';
     result.detail = 'No Word heading styles were found in this document.';
-    result.note = 'Nothing in this document uses a heading style, so it has no structure a screen reader can navigate. Short documents may legitimately have no headings. Whether text here should have been styled as a heading needs <strong>manual review</strong>.';
+    result.note = 'Nothing in this document uses a heading style. Whether any text here should have been styled as a heading needs <strong>manual review</strong>.';
     return result;
   }
 
@@ -656,13 +674,13 @@ function testHeadings(docs) {
   /* Information first, then the outline itself. */
   if (levelOnes === 0) {
     result.items.push({
-      label: 'For review', neutral: true,
-      value: 'No heading 1 in this document. The first heading is level ' + headings[0].level + '.'
+      label: 'Headings', raise: true,
+      badges: ['No heading 1 in this document. The first heading is level ' + headings[0].level + '.']
     });
   } else if (levelOnes > 1) {
     result.items.push({
-      label: 'For review', neutral: true,
-      value: levelOnes + ' heading 1s in this document. That can be correct, it depends on the document.'
+      label: 'Headings', raise: true,
+      badges: [levelOnes + ' heading 1s in this document.']
     });
   }
 
@@ -676,10 +694,10 @@ function testHeadings(docs) {
     var entry = seenCustom[key];
     var heading = entry.heading;
     result.items.push({
-      label: 'Custom style', neutral: true,
-      value: '"' + heading.styleName + '" is treated as heading ' + heading.level +
+      label: 'Custom style', raise: true,
+      badges: ['"' + heading.styleName + '" is treated as heading ' + heading.level +
         (heading.inheritedFrom ? ', outline level inherited from "' + displayStyleName(heading.inheritedFrom) + '"' : ', from its own outline level') +
-        (entry.count > 1 ? ', used ' + entry.count + ' times' : '')
+        (entry.count > 1 ? ', used ' + entry.count + ' times' : '')]
     });
   });
 
@@ -697,8 +715,8 @@ function testHeadings(docs) {
   });
   if (headings.length > shown.length) {
     result.items.push({
-      label: 'And more', neutral: true,
-      value: (headings.length - shown.length) + ' further headings not listed here'
+      label: 'Headings',
+      badges: [(headings.length - shown.length) + ' further headings not listed here']
     });
   }
 
@@ -707,323 +725,17 @@ function testHeadings(docs) {
   if (empties) problems.push(empties === 1 ? 'one empty heading' : empties + ' empty headings');
 
   var count = headings.length === 1 ? '1 heading found' : headings.length + ' headings found';
+  /* anything raised for a person to look at keeps this off a Pass */
+  var raised = result.items.filter(function (item) { return item.raise; }).length;
   if (problems.length) {
     result.status = 'fail';
     result.detail = count + ', with ' + problems.join(' and ') + '.';
   } else {
-    result.status = 'pass';
+    result.status = raised ? 'review' : 'pass';
     result.detail = count + ', in order, none empty.';
   }
 
   result.note = 'This test only sees text that uses a heading style. It can\u2019t see a paragraph that was made large and bold instead of being styled as a heading, and it can\u2019t judge whether a heading describes the section it sits above. Both need <strong>manual review</strong>.';
-  return result;
-}
-
-/* ---------- lists ----------
-   A real list paragraph carries w:numPr with a non-zero w:numId, either
-   directly or through its style. The format (bullet vs numbered) lives in
-   word/numbering.xml: numId -> abstractNumId -> the w:lvl for that indent
-   level -> w:numFmt. */
-
-function buildNumberingIndex(numberingDoc) {
-  var index = { numToAbstract: {}, formats: {} };
-  if (!numberingDoc) return index;
-
-  elements(numberingDoc, NS.w, 'num').forEach(function (num) {
-    var numId = attr(num, NS.w, 'numId');
-    var abstractEl = elements(num, NS.w, 'abstractNumId')[0];
-    var abstractId = abstractEl ? attr(abstractEl, NS.w, 'val') : null;
-    if (numId && abstractId) index.numToAbstract[numId] = abstractId;
-  });
-
-  elements(numberingDoc, NS.w, 'abstractNum').forEach(function (abstractNum) {
-    var abstractId = attr(abstractNum, NS.w, 'abstractNumId');
-    if (!abstractId) return;
-    var levels = {};
-    elements(abstractNum, NS.w, 'lvl').forEach(function (lvl) {
-      var ilvl = attr(lvl, NS.w, 'ilvl');
-      var fmtEl = elements(lvl, NS.w, 'numFmt')[0];
-      if (ilvl !== null && fmtEl) levels[ilvl] = attr(fmtEl, NS.w, 'val');
-    });
-    index.formats[abstractId] = levels;
-  });
-  return index;
-}
-
-function listFormat(numberingIndex, numId, ilvl) {
-  var abstractId = numberingIndex.numToAbstract[numId];
-  if (!abstractId) return null;
-  var levels = numberingIndex.formats[abstractId] || {};
-  return levels[ilvl || '0'] || levels['0'] || null;
-}
-
-function describeFormat(format) {
-  if (!format) return 'List';
-  if (format === 'bullet') return 'Bulleted list';
-  if (format === 'none') return 'List';
-  return 'Numbered list';
-}
-
-/* numPr can sit on the paragraph or be inherited from its style. */
-function numberingOfStyle(index, styleId) {
-  var seen = {};
-  var current = styleId;
-  var depth = 0;
-  while (current && index[current] && !seen[current] && depth < 20) {
-    seen[current] = true;
-    var raw = index[current].element;
-    if (raw) {
-      var numPr = elements(raw, NS.w, 'numPr')[0];
-      if (numPr) {
-        var numIdEl = elements(numPr, NS.w, 'numId')[0];
-        var ilvlEl = elements(numPr, NS.w, 'ilvl')[0];
-        var numId = numIdEl ? attr(numIdEl, NS.w, 'val') : null;
-        if (numId && numId !== '0') {
-          return { numId: numId, ilvl: ilvlEl ? attr(ilvlEl, NS.w, 'val') : '0', fromStyle: index[current].name || current };
-        }
-      }
-    }
-    current = index[current].basedOn;
-    depth++;
-  }
-  return null;
-}
-
-var BULLET_GLYPHS = '\u2022\u25E6\u25AA\u00B7\u2023\u2043\u25CF\u25A0';
-
-/* Returns the kind of typed list marker a paragraph starts with, or null.
-   Numbers are capped at two digits so a paragraph opening with a year is
-   not mistaken for a list item. */
-function typedMarker(text) {
-  var match = /^(\S{1,6})\s+(\S.*)$/.exec(text);
-  if (!match) return null;
-  var token = match[1];
-
-  if (BULLET_GLYPHS.indexOf(token) !== -1 && token.length === 1) return 'glyph';
-  if (/^[-*\u2013\u2014]$/.test(token)) return 'dash';
-
-  var wrapped = /^\(.+\)$/.test(token);
-  var closed = /[.)]$/.test(token);
-  if (!wrapped && !closed) return null;
-
-  var core = token.replace(/^\(/, '').replace(/[.)]$/, '');
-  if (/^\d{1,2}$/.test(core)) return 'number';
-  if (/^[ivxlcdm]{2,4}$/i.test(core)) return 'roman';
-  if (/^[a-z]$/i.test(core)) return 'letter';
-  return null;
-}
-
-function hasLineBreak(paragraph) {
-  return elements(paragraph, NS.w, 'br').some(function (br) {
-    var type = attr(br, NS.w, 'type');
-    return type === null || type === 'textWrapping';
-  });
-}
-
-function collectParagraphs(documentDoc, styleIndex, numberingIndex) {
-  var rows = [];
-  elements(documentDoc, NS.w, 'p').forEach(function (paragraph) {
-    var pPr = elements(paragraph, NS.w, 'pPr')[0];
-    var styleEl = pPr ? elements(pPr, NS.w, 'pStyle')[0] : null;
-    var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
-
-    var numId = null;
-    var ilvl = '0';
-    var fromStyle = null;
-
-    var numPr = pPr ? elements(pPr, NS.w, 'numPr')[0] : null;
-    if (numPr) {
-      var numIdEl = elements(numPr, NS.w, 'numId')[0];
-      var ilvlEl = elements(numPr, NS.w, 'ilvl')[0];
-      var direct = numIdEl ? attr(numIdEl, NS.w, 'val') : null;
-      if (direct && direct !== '0') {
-        numId = direct;
-        ilvl = ilvlEl ? attr(ilvlEl, NS.w, 'val') : '0';
-      }
-    }
-    if (!numId && styleId) {
-      var inherited = numberingOfStyle(styleIndex, styleId);
-      if (inherited) {
-        numId = inherited.numId;
-        ilvl = inherited.ilvl;
-        fromStyle = inherited.fromStyle;
-      }
-    }
-
-    var text = paragraphText(paragraph).trim();
-    rows.push({
-      text: text,
-      isList: !!numId,
-      numId: numId,
-      ilvl: ilvl || '0',
-      fromStyle: fromStyle,
-      format: numId ? listFormat(numberingIndex, numId, ilvl || '0') : null,
-      hasBreak: hasLineBreak(paragraph),
-      marker: numId ? null : typedMarker(text)
-    });
-  });
-  return rows;
-}
-
-/* Test 4: lists
-   Deterministic: which paragraphs carry real list numbering, and which
-   plain paragraphs open with something that looks like a typed marker.
-   Not deterministic: whether a typed marker was meant to be a list.
-   Manual review. */
-function testLists(docs) {
-  var documentDoc = docs['word/document.xml'];
-  var result = {
-    id: 'lists',
-    name: 'Lists',
-    summary: 'Checks whether lists use real Word list formatting, and looks for lists that were typed by hand.',
-    items: [],
-    note: null
-  };
-
-  if (!documentDoc) {
-    result.status = 'fail';
-    result.detail = 'This file has no word/document.xml part, so no content could be read.';
-    return result;
-  }
-
-  var styleIndex = buildStyleIndex(docs['word/styles.xml']);
-  var numberingIndex = buildNumberingIndex(docs['word/numbering.xml']);
-  var rows = collectParagraphs(documentDoc, styleIndex, numberingIndex);
-
-  /* group consecutive real list paragraphs that share a numId */
-  var groups = [];
-  var current = null;
-  rows.forEach(function (row, index) {
-    if (!row.isList) { current = null; return; }
-    if (!current || current.numId !== row.numId) {
-      current = { numId: row.numId, format: row.format, items: [], levels: {}, start: index, fromStyle: row.fromStyle };
-      groups.push(current);
-    }
-    current.items.push(row);
-    current.levels[row.ilvl] = true;
-    current.end = index;
-  });
-
-  /* runs of consecutive typed markers */
-  var typedRuns = [];
-  var run = null;
-  rows.forEach(function (row, index) {
-    if (!row.marker) { run = null; return; }
-    if (!run) { run = { items: [], start: index }; typedRuns.push(run); }
-    run.items.push(row);
-  });
-
-  /* A single stray marker is only reported when it is a true bullet glyph,
-     which has no other use in running text. Everything else needs two or
-     more in a row before it is worth flagging. */
-  var flaggedRuns = typedRuns.filter(function (r) {
-    return r.items.length > 1 || r.items[0].marker === 'glyph';
-  });
-
-  var brokenItems = [];
-  groups.forEach(function (group) {
-    group.items.forEach(function (item) {
-      if (item.hasBreak) brokenItems.push(item);
-    });
-  });
-
-  var splitLists = [];
-  for (var i = 1; i < groups.length; i++) {
-    var previous = groups[i - 1];
-    var group = groups[i];
-    var between = rows.slice(previous.end + 1, group.start);
-    var onlyEmpty = between.every(function (row) { return !row.text; });
-    var sameShape = numberingIndex.numToAbstract[previous.numId] === numberingIndex.numToAbstract[group.numId];
-    if (previous.numId !== group.numId && sameShape && (between.length === 0 || onlyEmpty || between.length === 1)) {
-      splitLists.push({ first: previous, second: group });
-    }
-  }
-
-  var levelJumps = [];
-  groups.forEach(function (group) {
-    var previousLevel = null;
-    group.items.forEach(function (item) {
-      var level = parseInt(item.ilvl, 10) || 0;
-      if (previousLevel !== null && level > previousLevel + 1) levelJumps.push(group);
-      previousLevel = level;
-    });
-  });
-
-  if (!groups.length && !flaggedRuns.length) {
-    result.status = 'untested';
-    result.detail = 'No lists and no typed list markers were found in this document.';
-    result.note = 'There was nothing here to test. Whether any content should have been a list needs <strong>manual review</strong>.';
-    return result;
-  }
-
-  flaggedRuns.forEach(function (r) {
-    result.items.push({
-      label: 'Typed list',
-      flag: true,
-      flags: ['Not a real list'],
-      value: r.items.length + (r.items.length === 1 ? ' paragraph starts' : ' paragraphs start') +
-        ' with a list marker but carries no list formatting, beginning "' + r.items[0].text.slice(0, 60) + '"'
-    });
-  });
-
-  brokenItems.forEach(function (item) {
-    result.items.push({
-      label: 'List item',
-      flag: true,
-      flags: ['Line break inside item'],
-      value: '"' + item.text.slice(0, 60) + '"'
-    });
-  });
-
-  splitLists.forEach(function (split) {
-    result.items.push({
-      label: 'Split list',
-      flag: true,
-      flags: ['Two lists, not one'],
-      value: 'A list of ' + split.first.items.length + ' items is followed by a separate list of ' +
-        split.second.items.length + ' items in the same format'
-    });
-  });
-
-  levelJumps.forEach(function () {
-    result.items.push({
-      label: 'Nesting',
-      flag: true,
-      flags: ['Level skipped'],
-      value: 'A list jumps more than one indent level at once'
-    });
-  });
-
-  groups.forEach(function (group) {
-    var levels = Object.keys(group.levels).length;
-    var parts = [group.items.length + (group.items.length === 1 ? ' item' : ' items')];
-    if (levels > 1) parts.push(levels + ' levels');
-    if (group.items.length === 1) parts.push('a list of one item is worth a look');
-    if (group.fromStyle) parts.push('numbering comes from the style "' + group.fromStyle + '"');
-    result.items.push({
-      label: describeFormat(group.format),
-      neutral: true,
-      value: parts.join(', ')
-    });
-  });
-
-  var problems = [];
-  if (flaggedRuns.length) problems.push(flaggedRuns.length === 1 ? 'one typed list' : flaggedRuns.length + ' typed lists');
-  if (brokenItems.length) problems.push(brokenItems.length === 1 ? 'one item split by a line break' : brokenItems.length + ' items split by line breaks');
-  if (splitLists.length) problems.push(splitLists.length === 1 ? 'one split list' : splitLists.length + ' split lists');
-  if (levelJumps.length) problems.push('a skipped nesting level');
-
-  var listCount = groups.length === 1 ? '1 real list' : groups.length + ' real lists';
-
-  if (problems.length) {
-    result.status = 'review';
-    result.detail = listCount + ' found, plus ' + problems.join(', ') + '.';
-    result.note = 'Each item above is a pattern, not a verdict. A paragraph can open with a number or a dash for reasons that have nothing to do with lists, and a line break inside an item is sometimes deliberate. Confirming each one needs <strong>manual review</strong>.';
-  } else {
-    result.status = 'pass';
-    result.detail = listCount + ' found, all using real Word list formatting.';
-    result.note = 'This test confirms these lists carry real list formatting. It can\u2019t tell whether the grouping makes sense, or whether other content should have been a list too. That needs <strong>manual review</strong>.';
-  }
   return result;
 }
 
@@ -1230,7 +942,7 @@ function testLists(docs) {
     var kind = format === 'bullet' ? 'Bulleted list' : (format ? 'Numbered list' : 'List');
     var levelCount = Object.keys(block.levels).length;
     result.items.push({
-      label: 'Real list', neutral: true,
+      label: 'Real list',
       value: kind + ', ' + block.items.length + (block.items.length === 1 ? ' item' : ' items') +
         (levelCount > 1 ? ', ' + levelCount + ' levels' : '') +
         (block.fromStyle ? ', numbering comes from its paragraph style' : '') +
@@ -1266,8 +978,34 @@ function testLists(docs) {
     });
   });
 
-  /* Word gives each part of a split list its own numId, but they keep
-     pointing at the same abstract numbering, so group on that. */
+  /* Two signals that one list has been broken into several.
+     Blocks with nothing between them are the strong case: it looks like a
+     single list on the page but is several lists to a screen reader.
+     Blocks separated by other content are weaker, so they are only raised
+     when they share the same abstract numbering. */
+  var adjacentRun = [];
+  var runs = [];
+  blocks.forEach(function (block, index) {
+    if (index > 0 && !block.precededByText) {
+      if (!adjacentRun.length) adjacentRun.push(blocks[index - 1]);
+      adjacentRun.push(block);
+    } else {
+      if (adjacentRun.length > 1) runs.push(adjacentRun);
+      adjacentRun = [];
+    }
+  });
+  if (adjacentRun.length > 1) runs.push(adjacentRun);
+
+  runs.forEach(function (run) {
+    findings.push('run-together');
+    var count = run.reduce(function (sum, block) { return sum + block.items.length; }, 0);
+    result.items.push({
+      label: 'Lists',
+      badges: ['What looks like one list of ' + count + ' items is ' + run.length +
+        ' separate lists with nothing between them.']
+    });
+  });
+
   var byAbstract = {};
   blocks.forEach(function (block) {
     var key = numbering.abstractFor(block.numId) || 'num:' + block.numId;
@@ -1281,25 +1019,33 @@ function testLists(docs) {
     }).length;
     if (group.length > 1 && separated) {
       findings.push('split');
-      var count = group.reduce(function (sum, block) { return sum + block.items.length; }, 0);
+      var total = group.reduce(function (sum, block) { return sum + block.items.length; }, 0);
       result.items.push({
-        label: 'For review', neutral: true,
-        value: group.length + ' lists here share the same numbering, ' + count + ' items in total, separated by other content. ' +
-          'If that was meant to be one list, it will be read as ' + group.length + ' separate lists.'
+        label: 'Lists',
+        badges: [group.length + ' lists here share the same numbering, ' + total + ' items in total, separated by other content.']
       });
     }
   });
 
-  blocks.forEach(function (block) {
-    /* a single item already flagged for line breaks is covered by that flag */
-    if (block.items.length === 1 && !block.items[0].lineBreaks) {
-      findings.push('single');
-      result.items.push({
-        label: 'For review', neutral: true,
-        value: 'A list with a single item: ' + shorten(block.items[0].text, 40) + '. That is sometimes deliberate.'
-      });
-    }
+  /* a single item already flagged for line breaks is covered by that flag */
+  var singles = blocks.filter(function (block) {
+    return block.items.length === 1 && !block.items[0].lineBreaks;
+  }).length;
+  if (singles) {
+    findings.push('single');
+    result.items.push({
+      label: 'Lists',
+      badges: [singles === 1 ? 'A list with a single item' : singles + ' lists have a single item']
+    });
+  }
+
+  var documentLevel = [], flagged = [], inventory = [];
+  result.items.forEach(function (item) {
+    if (item.label === 'Lists') documentLevel.push(item);
+    else if (item.flag) flagged.push(item);
+    else inventory.push(item);
   });
+  result.items = documentLevel.concat(flagged, inventory);
 
   var described = [];
   if (blocks.length) {
@@ -1314,8 +1060,686 @@ function testLists(docs) {
   result.detail = described.join(', ') + '.';
 
   result.note = findings.indexOf('typed') !== -1
-    ? 'Paragraphs flagged here start with a bullet or number typed as text, so a screen reader announces the characters and not a list. Check them and apply real list formatting where they were meant to be lists. Anything else flagged, and whether each one really is a list, needs <strong>manual review</strong>.'
+    ? 'Paragraphs flagged here start with a bullet or number typed as text rather than using list formatting. Whether each one is meant to be a list needs <strong>manual review</strong>.'
     : 'This test can see which paragraphs use real list formatting. It can\u2019t tell whether the grouping makes sense for the content. Anything flagged needs <strong>manual review</strong>.';
+  return result;
+}
+
+/* ---------- images ----------
+   Alt text lives on wp:docPr as @descr. @title is a separate field that
+   assistive technology does not announce as alt text. Decorative images
+   carry an adec:decorative extension inside wp:docPr and correctly have
+   no alt text at all. */
+
+var PART_LABELS = [
+  [/^word\/document\.xml$/, 'the document body'],
+  [/^word\/header\d+\.xml$/, 'a page header'],
+  [/^word\/footer\d+\.xml$/, 'a page footer'],
+  [/^word\/footnotes\.xml$/, 'the footnotes'],
+  [/^word\/endnotes\.xml$/, 'the endnotes']
+];
+
+function partLabel(path) {
+  for (var i = 0; i < PART_LABELS.length; i++) {
+    if (PART_LABELS[i][0].test(path)) return PART_LABELS[i][1];
+  }
+  return path;
+}
+
+function isDecorative(docPr) {
+  var flags = elements(docPr, NS.adec, 'decorative');
+  for (var i = 0; i < flags.length; i++) {
+    var val = flags[i].getAttribute ? flags[i].getAttribute('val') : null;
+    if (val === '1' || val === 'true') return true;
+  }
+  return false;
+}
+
+function insideTableCell(node) {
+  var current = node.parentNode;
+  while (current) {
+    if (current.localName === 'tc') return true;
+    current = current.parentNode;
+  }
+  return false;
+}
+
+function collectImages(docs) {
+  var images = [];
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+
+    ['inline', 'anchor'].forEach(function (kind) {
+      elements(docs[path], NS.wp, kind).forEach(function (drawing) {
+        var docPr = elements(drawing, NS.wp, 'docPr')[0];
+        if (!docPr) return;
+
+        /* wp:docPr is also used for shapes, charts and text boxes.
+           Only report the ones that actually contain a picture. */
+        var isPicture = elements(drawing, NS.pic, 'pic').length > 0;
+
+        images.push({
+          part: path,
+          name: docPr.getAttribute('name') || 'Unnamed',
+          descr: docPr.getAttribute('descr'),
+          title: docPr.getAttribute('title'),
+          decorative: isDecorative(docPr),
+          floating: kind === 'anchor',
+          inTable: insideTableCell(drawing),
+          isPicture: isPicture
+        });
+      });
+    });
+  });
+  return images;
+}
+
+/* Word appends its own wording when it writes a description itself.
+   This is Word's boilerplate, not a judgement about the writing, but it
+   is only recognised in English. */
+var AUTO_ALT = /description automatically generated|generated with high confidence|generated with medium confidence|generated with low confidence/i;
+
+/* Test 5: image alt text
+   Deterministic: whether each image has alt text, is marked decorative, or
+   carries only a title. Not deterministic: whether the alt text is any
+   good. Manual review. */
+function testImages(docs) {
+  var result = {
+    id: 'images',
+    name: 'Image alt text',
+    summary: 'Checks whether every image has alt text or is marked as decorative.',
+    items: [],
+    note: null
+  };
+
+  var images = collectImages(docs);
+
+  if (!images.length) {
+    result.status = 'untested';
+    result.detail = 'No images were found in this document.';
+    return result;
+  }
+
+  var failures = 0;
+  var autoGenerated = 0;
+
+  images.forEach(function (image) {
+    var where = [];
+    if (image.part !== 'word/document.xml') where.push('in ' + partLabel(image.part));
+    if (image.inTable) where.push('in a table cell');
+    if (image.floating) where.push('floating');
+    var location = where.length ? ' (' + where.join(', ') + ')' : '';
+
+    var alt = image.descr === null ? null : image.descr;
+    var flags = [];
+    var value;
+
+    if (image.decorative) {
+      result.items.push({
+        label: 'Image', badges: ['Marked as decorative, so no alt text is expected'], raise: true,
+        value: '"' + image.name + '"' + location
+      });
+      return;
+    }
+
+    if (alt === null) {
+      flags.push('No alt text');
+      value = '"' + image.name + '"' + location;
+    } else if (alt === '') {
+      flags.push('Alt text is empty');
+      value = '"' + image.name + '"' + location;
+    } else if (!alt.trim()) {
+      flags.push('Alt text is only spaces');
+      value = '"' + image.name + '"' + location;
+    } else {
+      value = '"' + image.name + '"' + location + ': ' + shorten(alt.trim().replace(/\s+/g, ' '), 90);
+    }
+
+    if (!flags.length && image.title && !alt) {
+      flags.push('Title only, no alt text');
+    }
+    if (flags.length && image.title) {
+      flags.push('A title is set, alt text is not');
+    }
+
+    if (flags.length) {
+      failures++;
+      result.items.push({ label: 'Image', value: value, flag: true, flags: flags });
+      return;
+    }
+
+    if (AUTO_ALT.test(alt)) {
+      autoGenerated++;
+      result.items.push({
+        label: 'Image', value: value, flag: true,
+        flags: ['Alt text was written by Word']
+      });
+      return;
+    }
+
+    result.items.push({ label: 'Image', value: value });
+  });
+
+  var nonPictures = images.filter(function (image) { return !image.isPicture; }).length;
+  if (nonPictures) {
+    result.items.push({
+      label: 'Images',
+      badges: [nonPictures + (nonPictures === 1 ? ' item is' : ' items are') +
+        ' a shape, chart or text box rather than a picture.']
+    });
+  }
+
+  var count = images.length === 1 ? '1 image' : images.length + ' images';
+  if (failures) {
+    result.status = 'fail';
+    result.detail = count + ' found, ' + failures + ' without usable alt text.';
+  } else if (autoGenerated || result.items.filter(function (item) { return item.raise; }).length) {
+    result.status = 'review';
+    result.detail = autoGenerated
+      ? count + ' found, all with alt text, ' + autoGenerated +
+        (autoGenerated === 1 ? ' of them written' : ' of them written') + ' by Word.'
+      : count + ' found, with something to look at.';
+  } else {
+    result.status = 'pass';
+    result.detail = count + ' found, all with alt text or marked as decorative.';
+  }
+
+  result.note = 'This test confirms alt text is present. It can\u2019t judge whether that text is meaningful or accurate, that needs <strong>manual review</strong>. It also can\u2019t tell whether an image marked as decorative really is decorative.';
+  return result;
+}
+
+/* ---------- tables ----------
+   Rows and cells are read as direct children, never as descendants, so a
+   table nested inside a cell does not get counted as part of its parent.
+   w:tblHeader carries an optional w:val, and val="false" means the row is
+   not a header even though the element is present. */
+
+function directChildren(node, localName) {
+  var found = [];
+  for (var child = node.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType === 1 && child.localName === localName) found.push(child);
+  }
+  return found;
+}
+
+function isOn(value) {
+  return !(value === 'false' || value === '0' || value === 'off');
+}
+
+function isHeaderRow(row) {
+  var trPr = directChildren(row, 'trPr')[0];
+  if (!trPr) return false;
+  var marker = directChildren(trPr, 'tblHeader')[0];
+  if (!marker) return false;
+  return isOn(attr(marker, NS.w, 'val'));
+}
+
+function cellInfo(cell) {
+  var tcPr = directChildren(cell, 'tcPr')[0];
+  var span = 1;
+  var vMerge = null;
+  if (tcPr) {
+    var gridSpan = directChildren(tcPr, 'gridSpan')[0];
+    if (gridSpan) span = parseInt(attr(gridSpan, NS.w, 'val'), 10) || 1;
+    var merge = directChildren(tcPr, 'vMerge')[0];
+    if (merge) vMerge = attr(merge, NS.w, 'val') || 'continue';
+  }
+  var text = directChildren(cell, 'p').map(paragraphText).join(' ').trim();
+  return { text: text, span: span, vMerge: vMerge };
+}
+
+function precedingCaption(table) {
+  var previous = table.previousSibling;
+  while (previous && previous.nodeType !== 1) previous = previous.previousSibling;
+  if (!previous || previous.localName !== 'p') return null;
+  var pPr = directChildren(previous, 'pPr')[0];
+  var styleEl = pPr ? directChildren(pPr, 'pStyle')[0] : null;
+  var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
+  if (styleId !== 'Caption') return null;
+  return paragraphText(previous).trim();
+}
+
+function collectTables(docs) {
+  var tables = [];
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+
+    elements(docs[path], NS.w, 'tbl').forEach(function (table) {
+      var nested = false;
+      var parent = table.parentNode;
+      while (parent) {
+        if (parent.localName === 'tbl') { nested = true; break; }
+        parent = parent.parentNode;
+      }
+
+      var tblPr = directChildren(table, 'tblPr')[0];
+      var captionEl = tblPr ? directChildren(tblPr, 'tblCaption')[0] : null;
+      var descriptionEl = tblPr ? directChildren(tblPr, 'tblDescription')[0] : null;
+      var lookEl = tblPr ? directChildren(tblPr, 'tblLook')[0] : null;
+
+      tables.push({
+        part: path,
+        nested: nested,
+        caption: captionEl ? attr(captionEl, NS.w, 'val') : null,
+        description: descriptionEl ? attr(descriptionEl, NS.w, 'val') : null,
+        firstColumnStyled: lookEl ? isOn(attr(lookEl, NS.w, 'firstColumn')) && attr(lookEl, NS.w, 'firstColumn') !== null : false,
+        captionParagraph: precedingCaption(table),
+        rows: directChildren(table, 'tr').map(function (row) {
+          return { isHeader: isHeaderRow(row), cells: directChildren(row, 'tc').map(cellInfo) };
+        })
+      });
+    });
+  });
+  return tables;
+}
+
+/* Test 6: tables
+   Deterministic: whether a header row is marked, whether it is the first
+   row, whether its cells have content, and where cells are merged. Not
+   deterministic: whether a table is a data table at all, or whether the
+   first column should be row headers. Manual review. */
+function testTables(docs) {
+  var result = {
+    id: 'tables',
+    name: 'Tables',
+    summary: 'Checks whether each table has a marked header row, and reports structures that make tables hard to read.',
+    items: [],
+    note: null
+  };
+
+  var tables = collectTables(docs);
+  if (!tables.length) {
+    result.status = 'untested';
+    result.detail = 'No tables were found in this document.';
+    return result;
+  }
+
+  var failures = 0;
+  var reviews = 0;
+
+  tables.forEach(function (table, index) {
+    var flags = [];
+    var rows = table.rows;
+    var columns = rows.length
+      ? Math.max.apply(null, rows.map(function (row) {
+          return row.cells.reduce(function (sum, cell) { return sum + cell.span; }, 0);
+        }))
+      : 0;
+
+    var headerRows = 0;
+    while (headerRows < rows.length && rows[headerRows].isHeader) headerRows++;
+    var markedLater = rows.some(function (row, position) { return position > 0 && row.isHeader; });
+
+    if (rows.length === 1) {
+      flags.push('Single row table');
+    } else if (!headerRows && markedLater) {
+      var which = 0;
+      rows.forEach(function (row, position) { if (!which && row.isHeader) which = position + 1; });
+      flags.push('Header row marked on row ' + which + ', not the first row');
+    } else if (!headerRows) {
+      flags.push('No header row marked');
+    } else {
+      var empties = [];
+      rows.slice(0, headerRows).forEach(function (row) {
+        row.cells.forEach(function (cell, position) {
+          if (!cell.text) empties.push(position + 1);
+        });
+      });
+      if (empties.length) {
+        flags.push(empties.length === 1
+          ? 'Header cell ' + empties[0] + ' is empty'
+          : 'Header cells ' + empties.join(', ') + ' are empty');
+      }
+    }
+
+    var spans = 0;
+    var merges = 0;
+    rows.forEach(function (row) {
+      row.cells.forEach(function (cell) {
+        if (cell.span > 1) spans++;
+        if (cell.vMerge) merges++;
+      });
+    });
+    if (spans) flags.push(spans === 1 ? 'A cell spans columns' : spans + ' cells span columns');
+    if (merges) flags.push('Cells merged down rows');
+    if (table.nested) flags.push('Nested inside another table');
+
+    var hard = flags.filter(function (flag) {
+      return flag.indexOf('No header row') === 0 || flag.indexOf('Header row marked on row') === 0 || flag.indexOf('Header cell') === 0;
+    }).length;
+    if (hard) failures++; else if (flags.length) reviews++;
+
+    var where = [];
+    if (table.part !== 'word/document.xml') where.push('in ' + partLabel(table.part));
+    var first = rows.length && rows[0].cells.length ? rows[0].cells[0].text : '';
+
+    var label = 'Table ' + (index + 1);
+    var value = (where.length ? where.join(', ') + ', ' : '') +
+      rows.length + (rows.length === 1 ? ' row' : ' rows') + ' by ' + columns +
+      (columns === 1 ? ' column' : ' columns') +
+      (headerRows ? ', ' + headerRows + ' header ' + (headerRows === 1 ? 'row' : 'rows') : '') +
+      (first ? ', starts "' + shorten(first, 30) + '"' : '');
+
+    if (flags.length) {
+      result.items.push({ label: label, value: value, flag: true, flags: flags });
+    } else {
+      result.items.push({ label: label, value: value });
+    }
+
+    /* Word's own table alt text, and the things that only look like structure */
+    if (table.caption || table.description) {
+      result.items.push({
+        label: label,
+        value: 'Alt text set: ' +
+          (table.caption ? 'title "' + shorten(table.caption, 40) + '"' : 'no title') + ', ' +
+          (table.description ? 'description "' + shorten(table.description, 60) + '"' : 'no description')
+      });
+    } else {
+      result.items.push({
+        label: label,
+        badges: ['No table title or description set']
+      });
+    }
+    if (table.captionParagraph) {
+      result.items.push({
+        label: label, raise: true,
+        badges: ['A caption paragraph sits above this table, but nothing in the file links the two'],
+        value: shorten(table.captionParagraph, 40)
+      });
+    }
+    if (table.firstColumnStyled) {
+      result.items.push({
+        label: label, raise: true,
+        badges: ['The first column is styled as headers. Word has no way to mark row headers.']
+      });
+    }
+  });
+
+  reviews += result.items.filter(function (item) { return item.raise; }).length;
+  var count = tables.length === 1 ? '1 table' : tables.length + ' tables';
+  if (failures) {
+    result.status = 'fail';
+    result.detail = count + ' found, ' + failures + ' without a usable header row.';
+  } else if (reviews) {
+    result.status = 'review';
+    result.detail = count + ' found, ' + reviews + ' needing a look.';
+  } else {
+    result.status = 'pass';
+    result.detail = count + ' found, each with a marked header row.';
+  }
+
+  result.note = 'A marked header row is the only table structure Word records. Whether a table holds data or is used for layout, and which column should be row headers, both need <strong>manual review</strong>.';
+  return result;
+}
+
+/* ---------- links ----------
+   Links reach a target three ways: w:hyperlink with an r:id resolved
+   through that part's own .rels file, w:hyperlink with a w:anchor naming a
+   bookmark, or a HYPERLINK field code holding the target as literal text.
+   An image can also carry its own link through a:hlinkClick. */
+
+var REL_PARTS = /^word\/_rels\/(document|header\d+|footer\d+|footnotes|endnotes)\.xml\.rels$/;
+var URL_IN_TEXT = /\b(?:https?:\/\/|www\.)[^\s<>"']{4,}/i;
+
+/* Compares link text against its target as strings, so "the text is the
+   URL" is an exact match rather than a guess about what looks like a URL. */
+function normaliseUrl(value) {
+  if (!value) return null;
+  var text = value.trim().toLowerCase().replace(/[.,;:)\]]+$/, '');
+  if (!/^(?:https?:\/\/|www\.)\S+$/.test(text)) return null;
+  return text.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+}
+
+function relationshipsFor(docs, partPath) {
+  var relPath = partPath.replace(/^word\/([^/]+)$/, 'word/_rels/$1.rels');
+  var relDoc = docs[relPath];
+  var map = {};
+  if (!relDoc) return map;
+  elements(relDoc, NS.pkgRel, 'Relationship').forEach(function (rel) {
+    var id = rel.getAttribute('Id');
+    if (id) map[id] = { target: rel.getAttribute('Target') || '', mode: rel.getAttribute('TargetMode') || '' };
+  });
+  return map;
+}
+
+function collectBookmarks(docs) {
+  var names = {};
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+    elements(docs[path], NS.w, 'bookmarkStart').forEach(function (bookmark) {
+      var name = attr(bookmark, NS.w, 'name');
+      if (name) names[name] = true;
+    });
+  });
+  return names;
+}
+
+/* An image inside a link supplies the link's name through its alt text. */
+function linkImage(node) {
+  var docPr = elements(node, NS.wp, 'docPr')[0];
+  if (!docPr) return null;
+  return {
+    name: docPr.getAttribute('name') || 'image',
+    descr: docPr.getAttribute('descr'),
+    decorative: isDecorative(docPr)
+  };
+}
+
+function fieldTarget(instruction) {
+  if (!instruction) return null;
+  var match = /HYPERLINK\s+"([^"]+)"/i.exec(instruction) || /HYPERLINK\s+(\S+)/i.exec(instruction);
+  return match ? match[1] : null;
+}
+
+function collectLinks(docs) {
+  var links = [];
+
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+    var rels = relationshipsFor(docs, path);
+
+    elements(docs[path], NS.w, 'hyperlink').forEach(function (node) {
+      var id = attr(node, NS.rel, 'id');
+      var anchor = attr(node, NS.w, 'anchor');
+      var rel = id ? rels[id] : null;
+      links.push({
+        part: path,
+        kind: 'hyperlink',
+        text: paragraphText(node),
+        image: linkImage(node),
+        relId: id,
+        target: rel ? rel.target : null,
+        anchor: anchor,
+        tooltip: attr(node, NS.w, 'tooltip'),
+        missingRelationship: !!id && !rel,
+        node: node
+      });
+    });
+
+    elements(docs[path], NS.w, 'fldSimple').forEach(function (node) {
+      var instruction = attr(node, NS.w, 'instr');
+      if (!instruction || !/HYPERLINK/i.test(instruction)) return;
+      links.push({
+        part: path,
+        kind: 'field',
+        text: paragraphText(node),
+        image: null,
+        target: fieldTarget(instruction),
+        node: node
+      });
+    });
+
+    /* An image that carries its own link, with no w:hyperlink around it. */
+    elements(docs[path], NS.a, 'hlinkClick').forEach(function (node) {
+      var parent = node.parentNode;
+      var wrapped = false;
+      while (parent) {
+        if (parent.localName === 'hyperlink') { wrapped = true; break; }
+        parent = parent.parentNode;
+      }
+      if (wrapped) return;
+      var id = attr(node, NS.rel, 'id');
+      if (!id) return;
+      var drawing = node;
+      while (drawing && drawing.localName !== 'inline' && drawing.localName !== 'anchor') drawing = drawing.parentNode;
+      links.push({
+        part: path,
+        kind: 'image link',
+        text: '',
+        image: drawing ? linkImage(drawing) : null,
+        relId: id,
+        target: rels[id] ? rels[id].target : null,
+        missingRelationship: !rels[id],
+        node: node
+      });
+    });
+  });
+
+  return links;
+}
+
+/* Text that looks like a URL but sits outside any link. */
+function collectPlainUrls(docs) {
+  var found = [];
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+    elements(docs[path], NS.w, 'p').forEach(function (paragraph) {
+      var linked = '';
+      elements(paragraph, NS.w, 'hyperlink').forEach(function (node) { linked += paragraphText(node); });
+      elements(paragraph, NS.w, 'fldSimple').forEach(function (node) { linked += paragraphText(node); });
+      var text = paragraphText(paragraph);
+      if (linked) text = text.split(linked).join(' ');
+      var match = URL_IN_TEXT.exec(text);
+      if (match) found.push({ part: path, text: match[0].replace(/[.,;:)]+$/, '') });
+    });
+  });
+  return found;
+}
+
+/* Test 7: links
+   Deterministic: whether a link has a name at all, and whether its target
+   resolves. Not deterministic: whether the text describes the destination.
+   That is reported without a verdict and left to manual review. */
+function testLinks(docs) {
+  var result = {
+    id: 'links',
+    name: 'Links',
+    summary: 'Checks whether every link has text to announce and a target that resolves.',
+    items: [],
+    note: null
+  };
+
+  var links = collectLinks(docs);
+  var plainUrls = collectPlainUrls(docs);
+  var bookmarks = collectBookmarks(docs);
+
+  if (!links.length && !plainUrls.length) {
+    result.status = 'untested';
+    result.detail = 'No links were found in this document.';
+    return result;
+  }
+
+  var failures = 0;
+  var reviews = 0;
+
+  /* same visible text, different targets */
+  var byText = {};
+  links.forEach(function (link) {
+    var key = link.text.trim().toLowerCase();
+    if (!key) return;
+    var destination = link.target || (link.anchor ? '#' + link.anchor : '');
+    if (!byText[key]) byText[key] = {};
+    byText[key][destination] = true;
+  });
+
+  links.forEach(function (link, index) {
+    var flags = [];
+    var badges = [];
+    var where = [];
+    if (link.part !== 'word/document.xml') where.push('in ' + partLabel(link.part));
+
+    var name = link.text.trim();
+    if (!name && link.image) {
+      if (link.image.decorative) {
+        flags.push('Only a decorative image inside');
+      } else if (link.image.descr && link.image.descr.trim()) {
+        name = link.image.descr.trim();
+        badges.push('Name comes from the image alt text');
+      } else {
+        flags.push('Only an image with no alt text inside');
+      }
+    } else if (!name) {
+      flags.push(link.text ? 'Link text is only spaces' : 'No link text');
+    }
+
+    if (link.missingRelationship) {
+      flags.push('Target is missing from the file');
+    } else if (link.kind === 'hyperlink' && !link.relId && !link.anchor) {
+      flags.push('No target at all');
+    } else if (link.anchor && !bookmarks[link.anchor]) {
+      flags.push('Points at a bookmark named "' + link.anchor + '" that does not exist');
+    }
+
+    var destination = link.target || (link.anchor ? 'this document, bookmark "' + link.anchor + '"' : '');
+    if (link.target && /^mailto:/i.test(link.target)) badges.push('Email address');
+    var localPath = !!(link.target && /^file:/i.test(link.target));
+    if (localPath) badges.push('Local file path');
+    if (link.kind === 'field') badges.push('Stored as a field code');
+    if (link.tooltip) badges.push('Tooltip: ' + shorten(link.tooltip, 40));
+
+    var duplicate = name && byText[name.toLowerCase()] && Object.keys(byText[name.toLowerCase()]).length > 1;
+    if (duplicate) badges.push('Same text as another link with a different target');
+
+    var textAsUrl = normaliseUrl(name);
+    var targetAsUrl = normaliseUrl(link.target);
+    if (textAsUrl) {
+      badges.push(targetAsUrl && textAsUrl !== targetAsUrl
+        ? 'Link text is a URL, but not the one this link points at'
+        : 'Link text is the URL');
+    }
+
+    if (flags.length) failures++; else if (duplicate || textAsUrl || localPath) reviews++;
+
+    var value = (name ? '"' + shorten(name.replace(/\s+/g, ' '), 60) + '"' : 'no text') +
+      (where.length ? ' ' + where.join(', ') : '') +
+      (destination ? ' \u2192 ' + shorten(destination, 60) : '');
+
+    var item = { label: 'Link ' + (index + 1), value: value };
+    if (flags.length) { item.flag = true; item.flags = flags; }
+    if (badges.length) item.badges = badges;
+    result.items.push(item);
+  });
+
+  plainUrls.forEach(function (entry) {
+    reviews++;
+    result.items.push({
+      label: 'Not a link',
+      badges: ['Written as text, not as a link' +
+        (entry.part !== 'word/document.xml' ? ', in ' + partLabel(entry.part) : '')],
+      value: shorten(entry.text, 60)
+    });
+  });
+
+  var count = links.length === 1 ? '1 link' : links.length + ' links';
+  var urlCount = plainUrls.length === 1 ? '1 URL' : plainUrls.length + ' URLs';
+  if (!links.length) {
+    result.status = 'review';
+    result.detail = 'No links found, but ' + urlCount + ' written as plain text.';
+    result.note = 'Whether a URL written as text should be a link is <strong>manual review</strong>.';
+    return result;
+  }
+  if (failures) {
+    result.status = 'fail';
+    result.detail = count + ' found, ' + failures + ' with problems.';
+  } else if (reviews) {
+    result.status = 'review';
+    result.detail = count + ' found, ' + reviews + ' needing a look.';
+  } else {
+    result.status = 'pass';
+    result.detail = count + ' found, each with text and a target that resolves.';
+  }
+
+  result.note = 'This test can see whether a link has a name and where it points. It can\u2019t judge whether the text describes the destination, so link text is listed without a verdict. Reading each link out of context is <strong>manual review</strong>.';
   return result;
 }
 
@@ -1327,10 +1751,10 @@ var WANTED_PARTS = [
   'word/numbering.xml'
 ];
 
-var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists];
+var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists, testImages, testTables, testLinks];
 
 function runTests(buffer, parseXml) {
-  return readDocxParts(buffer, WANTED_PARTS).then(function (read) {
+  return readDocxParts(buffer, WANTED_PARTS, [EXTRA_PARTS, REL_PARTS]).then(function (read) {
     var docs = {};
     Object.keys(read.parts).forEach(function (path) {
       docs[path] = parseXml(read.parts[path]);
@@ -1409,16 +1833,13 @@ function renderResult(result, number) {
     result.items.forEach(function (item) {
       var itemClass = 'result-item' + (item.flag ? ' result-item--flag' : '');
       html += '<li class="' + itemClass + '">';
-      if (item.flag) {
-        html += '<span class="result-item__label">' + escapeHtml(item.label) + '</span>';
-        (item.flags || [item.flagLabel || 'Problem']).forEach(function (flag) {
-          html += '<span class="flag-badge">' + escapeHtml(flag) + '</span>';
-        });
-      } else if (item.neutral) {
-        html += '<span class="badge-neutral">' + escapeHtml(item.label) + '</span>';
-      } else {
-        html += '<span class="result-item__label">' + escapeHtml(item.label) + '</span>';
-      }
+      html += '<span class="result-item__label">' + escapeHtml(item.label) + '</span>';
+      (item.flags || []).forEach(function (flag) {
+        html += '<span class="flag-badge">' + escapeHtml(flag) + '</span>';
+      });
+      (item.badges || []).forEach(function (badge) {
+        html += '<span class="badge-neutral">' + escapeHtml(badge) + '</span>';
+      });
       if (item.value) {
         html += '<span class="result-item__value">' + escapeHtml(item.value) + '</span>';
       }
