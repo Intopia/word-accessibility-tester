@@ -232,7 +232,7 @@ footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 </main>
 
 <footer>
-  <p>Seven tests so far: document title, document language, headings, lists, image alt text, tables and links. More to come.</p>
+  <p>Eight tests so far: document title, document language, headings, lists, image alt text, tables, links and text boxes. More to come.</p>
 </footer>
 </div>
 
@@ -253,7 +253,10 @@ var NS = {
   adec: 'http://schemas.microsoft.com/office/drawing/2017/decorative',
   a: 'http://schemas.openxmlformats.org/drawingml/2006/main',
   rel: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
-  pkgRel: 'http://schemas.openxmlformats.org/package/2006/relationships'
+  pkgRel: 'http://schemas.openxmlformats.org/package/2006/relationships',
+  mc: 'http://schemas.openxmlformats.org/markup-compatibility/2006',
+  wps: 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape',
+  v: 'urn:schemas-microsoft-com:vml'
 };
 
 /* ---------- minimal zip reader ---------- */
@@ -368,10 +371,35 @@ function readDocxParts(buffer, wanted, extraPattern) {
 
 /* ---------- XML helpers ---------- */
 
+function ownElements(node, ns, localName) {
+  var found = [];
+  (function walk(current) {
+    for (var child = current.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 1) continue;
+      var name = child.localName;
+      if (name === 'drawing' || name === 'pict' || name === 'Fallback') continue;
+      if (name === localName && child.namespaceURI === ns) found.push(child);
+      walk(child);
+    }
+  })(node);
+  return found;
+}
+
+function insideElement(node, localName) {
+  var current = node.parentNode;
+  while (current) {
+    if (current.localName === localName) return true;
+    current = current.parentNode;
+  }
+  return false;
+}
+
 function elements(doc, ns, localName) {
   if (!doc) return [];
   var found = doc.getElementsByTagNameNS ? doc.getElementsByTagNameNS(ns, localName) : [];
-  return Array.prototype.slice.call(found);
+  return Array.prototype.slice.call(found).filter(function (node) {
+    return !insideElement(node, 'Fallback');
+  });
 }
 
 function attr(el, ns, localName) {
@@ -576,6 +604,8 @@ function paragraphText(paragraph) {
       if (child.nodeType !== 1) continue;
       var name = child.localName;
       if (name === 'del') continue;          /* deleted with track changes */
+      if (name === 'drawing' || name === 'pict') continue;  /* text box content is its own */
+      if (name === 'Fallback') continue;     /* the VML copy of a modern text box */
       if (name === 't') { parts.push(textOf(child)); continue; }
       if (name === 'tab') { parts.push(' '); continue; }
       if (name === 'br') {
@@ -592,12 +622,12 @@ function paragraphText(paragraph) {
 function collectHeadings(documentDoc, styleIndex) {
   var headings = [];
   elements(documentDoc, NS.w, 'p').forEach(function (paragraph, position) {
-    var pPr = elements(paragraph, NS.w, 'pPr')[0];
+    var pPr = directChildren(paragraph, 'pPr')[0];
     if (!pPr) return;
 
-    var styleEl = elements(pPr, NS.w, 'pStyle')[0];
+    var styleEl = directChildren(pPr, 'pStyle')[0];
     var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
-    var directOutlineEl = elements(pPr, NS.w, 'outlineLvl')[0];
+    var directOutlineEl = directChildren(pPr, 'outlineLvl')[0];
     var directOutline = directOutlineEl ? attr(directOutlineEl, NS.w, 'val') : null;
 
     var resolved = styleId ? resolveStyle(styleIndex, styleId) : { name: null, outlineLvl: null, inheritedFrom: null };
@@ -614,6 +644,7 @@ function collectHeadings(documentDoc, styleIndex) {
       styleName: resolved.name || styleId || 'unnamed style',
       styleId: styleId,
       isBuiltIn: nameLevel !== null,
+      inTextBox: insideElement(paragraph, 'txbxContent'),
       inheritedFrom: resolved.inheritedFrom,
       position: position
     });
@@ -659,12 +690,15 @@ function testHeadings(docs) {
   headings.forEach(function (heading) {
     var flags = [];
     if (!heading.text) { flags.push('No text'); empties++; }
+    if (heading.inTextBox) {
+      heading.flags = flags;
+      return;   /* Word's outline does not include it, so it cannot skip a level */
+    }
     if (previousLevel !== null && heading.level > previousLevel + 1) {
       flags.push('Level skipped, ' + previousLevel + ' to ' + heading.level);
       skips++;
     }
     previousLevel = heading.level;
-
     heading.flags = flags;
   });
 
@@ -710,6 +744,10 @@ function testHeadings(docs) {
     if (heading.flags.length) {
       item.flag = true;
       item.flags = heading.flags;
+    }
+    if (heading.inTextBox) {
+      item.badges = ['In a text box, so Word\u2019s outline does not include it'];
+      item.raise = true;
     }
     result.items.push(item);
   });
@@ -782,10 +820,10 @@ function buildNumberingIndex(numberingDoc) {
 
 function numberingFromProperties(pPr) {
   if (!pPr) return null;
-  var numPr = elements(pPr, NS.w, 'numPr')[0];
+  var numPr = directChildren(pPr, 'numPr')[0];
   if (!numPr) return null;
-  var numIdEl = elements(numPr, NS.w, 'numId')[0];
-  var ilvlEl = elements(numPr, NS.w, 'ilvl')[0];
+  var numIdEl = directChildren(numPr, 'numId')[0];
+  var ilvlEl = directChildren(numPr, 'ilvl')[0];
   var numId = numIdEl ? attr(numIdEl, NS.w, 'val') : null;
   if (numId === null) return null;
   return { numId: numId, ilvl: ilvlEl ? attr(ilvlEl, NS.w, 'val') : '0' };
@@ -824,18 +862,18 @@ function markerFamily(text) {
 
 function collectParagraphs(documentDoc, styleIndex) {
   return elements(documentDoc, NS.w, 'p').map(function (paragraph, position) {
-    var pPr = elements(paragraph, NS.w, 'pPr')[0];
-    var styleEl = pPr ? elements(pPr, NS.w, 'pStyle')[0] : null;
+    var pPr = directChildren(paragraph, 'pPr')[0];
+    var styleEl = pPr ? directChildren(pPr, 'pStyle')[0] : null;
     var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
     var resolved = styleId ? resolveStyle(styleIndex, styleId) : { name: null, outlineLvl: null };
-    var directOutlineEl = pPr ? elements(pPr, NS.w, 'outlineLvl')[0] : null;
+    var directOutlineEl = pPr ? directChildren(pPr, 'outlineLvl')[0] : null;
 
     var numbering = numberingFromProperties(pPr) || (styleId ? styleNumbering(styleIndex, styleId) : null);
     if (numbering && numbering.numId === '0') numbering = null;
 
     /* w:br with no type is a line break inside the paragraph.
        A page or column break is a different thing and is ignored. */
-    var lineBreaks = elements(paragraph, NS.w, 'br').filter(function (br) {
+    var lineBreaks = ownElements(paragraph, NS.w, 'br').filter(function (br) {
       var type = attr(br, NS.w, 'type');
       return type === null || type === 'textWrapping';
     }).length;
@@ -848,6 +886,7 @@ function collectParagraphs(documentDoc, styleIndex) {
         || outlineLevelToHeading(directOutlineEl ? attr(directOutlineEl, NS.w, 'val') : null)
         || outlineLevelToHeading(resolved.outlineLvl),
       numbering: numbering,
+      inTextBox: insideElement(paragraph, 'txbxContent'),
       fromStyle: !numberingFromProperties(pPr) && !!numbering,
       lineBreaks: lineBreaks
     };
@@ -943,6 +982,7 @@ function testLists(docs) {
     var levelCount = Object.keys(block.levels).length;
     result.items.push({
       label: 'Real list',
+      badges: block.items[0].inTextBox ? ['In a text box'] : undefined,
       value: kind + ', ' + block.items.length + (block.items.length === 1 ? ' item' : ' items') +
         (levelCount > 1 ? ', ' + levelCount + ' levels' : '') +
         (block.fromStyle ? ', numbering comes from its paragraph style' : '') +
@@ -1109,25 +1149,25 @@ function collectImages(docs) {
   Object.keys(docs).forEach(function (path) {
     if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
 
-    ['inline', 'anchor'].forEach(function (kind) {
-      elements(docs[path], NS.wp, kind).forEach(function (drawing) {
-        var docPr = elements(drawing, NS.wp, 'docPr')[0];
-        if (!docPr) return;
+    elements(docs[path], NS.pic, 'pic').forEach(function (picture) {
+      var drawing = picture.parentNode;
+      while (drawing && drawing.localName !== 'inline' && drawing.localName !== 'anchor') {
+        drawing = drawing.parentNode;
+      }
+      if (!drawing) return;
+      var docPr = directChildren(drawing, 'docPr')[0];
+      if (!docPr) return;
 
-        /* wp:docPr is also used for shapes, charts and text boxes.
-           Only report the ones that actually contain a picture. */
-        var isPicture = elements(drawing, NS.pic, 'pic').length > 0;
-
-        images.push({
-          part: path,
-          name: docPr.getAttribute('name') || 'Unnamed',
-          descr: docPr.getAttribute('descr'),
-          title: docPr.getAttribute('title'),
-          decorative: isDecorative(docPr),
-          floating: kind === 'anchor',
-          inTable: insideTableCell(drawing),
-          isPicture: isPicture
-        });
+      images.push({
+        part: path,
+        name: docPr.getAttribute('name') || 'Unnamed',
+        descr: docPr.getAttribute('descr'),
+        title: docPr.getAttribute('title'),
+        decorative: isDecorative(docPr),
+        floating: drawing.localName === 'anchor',
+        inTable: insideTableCell(drawing),
+        inTextBox: insideElement(drawing, 'txbxContent'),
+        isPicture: true
       });
     });
   });
@@ -1166,6 +1206,7 @@ function testImages(docs) {
   images.forEach(function (image) {
     var where = [];
     if (image.part !== 'word/document.xml') where.push('in ' + partLabel(image.part));
+    if (image.inTextBox) where.push('in a text box');
     if (image.inTable) where.push('in a table cell');
     if (image.floating) where.push('floating');
     var location = where.length ? ' (' + where.join(', ') + ')' : '';
@@ -1319,6 +1360,7 @@ function collectTables(docs) {
 
       tables.push({
         part: path,
+        node: table,
         nested: nested,
         caption: captionEl ? attr(captionEl, NS.w, 'val') : null,
         description: descriptionEl ? attr(descriptionEl, NS.w, 'val') : null,
@@ -1356,6 +1398,7 @@ function testTables(docs) {
 
   var failures = 0;
   var reviews = 0;
+  var withoutAltText = [];
 
   tables.forEach(function (table, index) {
     var flags = [];
@@ -1411,6 +1454,7 @@ function testTables(docs) {
 
     var where = [];
     if (table.part !== 'word/document.xml') where.push('in ' + partLabel(table.part));
+    if (insideElement(table.node, 'txbxContent')) where.push('in a text box');
     var first = rows.length && rows[0].cells.length ? rows[0].cells[0].text : '';
 
     var label = 'Table ' + (index + 1);
@@ -1435,10 +1479,7 @@ function testTables(docs) {
           (table.description ? 'description "' + shorten(table.description, 60) + '"' : 'no description')
       });
     } else {
-      result.items.push({
-        label: label,
-        badges: ['No table title or description set']
-      });
+      withoutAltText.push(index + 1);
     }
     if (table.captionParagraph) {
       result.items.push({
@@ -1454,6 +1495,15 @@ function testTables(docs) {
       });
     }
   });
+
+  if (withoutAltText.length) {
+    result.items.push({
+      label: 'Tables',
+      badges: [withoutAltText.length === tables.length
+        ? (tables.length === 1 ? 'No table title or description set' : 'No table title or description set on any of these tables')
+        : 'No table title or description set on ' + withoutAltText.length + ' of ' + tables.length + ' tables']
+    });
+  }
 
   reviews += result.items.filter(function (item) { return item.raise; }).length;
   var count = tables.length === 1 ? '1 table' : tables.length + ' tables';
@@ -1657,6 +1707,7 @@ function testLinks(docs) {
     var badges = [];
     var where = [];
     if (link.part !== 'word/document.xml') where.push('in ' + partLabel(link.part));
+    if (insideElement(link.node, 'txbxContent')) where.push('in a text box');
 
     var name = link.text.trim();
     if (!name && link.image) {
@@ -1700,9 +1751,9 @@ function testLinks(docs) {
 
     if (flags.length) failures++; else if (duplicate || textAsUrl || localPath) reviews++;
 
-    var value = (name ? '"' + shorten(name.replace(/\s+/g, ' '), 60) + '"' : 'no text') +
-      (where.length ? ' ' + where.join(', ') : '') +
-      (destination ? ' \u2192 ' + shorten(destination, 60) : '');
+    var value = (name ? '"' + shorten(name.replace(/\s+/g, ' '), 60) + '"' : '') +
+      (where.length ? (name ? ' ' : '') + where.join(', ') : '') +
+      (destination ? (name || where.length ? ' ' : '') + '\u2192 ' + shorten(destination, 60) : '');
 
     var item = { label: 'Link ' + (index + 1), value: value };
     if (flags.length) { item.flag = true; item.flags = flags; }
@@ -1713,7 +1764,7 @@ function testLinks(docs) {
   plainUrls.forEach(function (entry) {
     reviews++;
     result.items.push({
-      label: 'Not a link',
+      label: 'URL',
       badges: ['Written as text, not as a link' +
         (entry.part !== 'word/document.xml' ? ', in ' + partLabel(entry.part) : '')],
       value: shorten(entry.text, 60)
@@ -1743,6 +1794,186 @@ function testLinks(docs) {
   return result;
 }
 
+/* ---------- text boxes ----------
+   A modern text box is a wps shape holding w:txbxContent, written inside
+   mc:Choice with a VML copy in mc:Fallback. The fallback is ignored
+   everywhere, so each box is read once. A legacy text box is a v:textbox
+   inside w:pict with no DrawingML copy at all. A shape with no
+   w:txbxContent is not a text box and is not reported here. */
+
+function textBoxContainer(box) {
+  var node = box.parentNode;
+  while (node) {
+    if (node.localName === 'anchor' || node.localName === 'inline' || node.localName === 'pict') return node;
+    node = node.parentNode;
+  }
+  return null;
+}
+
+function horizontalOffset(container) {
+  if (!container || container.localName !== 'anchor') return null;
+  var positionH = directChildren(container, 'positionH')[0];
+  if (!positionH) return null;
+  var offset = directChildren(positionH, 'posOffset')[0];
+  if (!offset) return null;
+  var value = parseInt(textOf(offset), 10);
+  return isNaN(value) ? null : { value: value, relativeTo: attr(positionH, null, 'relativeFrom') || positionH.getAttribute('relativeFrom') };
+}
+
+function anchorParagraph(container) {
+  var node = container;
+  while (node) {
+    if (node.localName === 'p') return node;
+    node = node.parentNode;
+  }
+  return null;
+}
+
+function collectTextBoxes(docs) {
+  var boxes = [];
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+
+    elements(docs[path], NS.w, 'txbxContent').forEach(function (box) {
+      var container = textBoxContainer(box);
+      var docPr = null;
+      var legacyAlt = null;
+
+      if (container && container.localName !== 'pict') {
+        docPr = directChildren(container, 'docPr')[0];
+      } else if (container) {
+        var shape = elements(container, NS.v, 'shape')[0];
+        if (shape) legacyAlt = shape.getAttribute('alt');
+      }
+
+      var paragraphs = elements(box, NS.w, 'p');
+      var text = paragraphs.map(paragraphText).join(' ').replace(/\s+/g, ' ').trim();
+
+      boxes.push({
+        part: path,
+        name: docPr ? (docPr.getAttribute('name') || 'Text box') : 'Text box',
+        alt: docPr ? docPr.getAttribute('descr') : legacyAlt,
+        title: docPr ? docPr.getAttribute('title') : null,
+        legacy: !!(container && container.localName === 'pict'),
+        floating: !!(container && (container.localName === 'anchor' || container.localName === 'pict')),
+        offset: horizontalOffset(container),
+        anchorParagraph: anchorParagraph(container),
+        inTable: insideElement(box, 'tc'),
+        text: text,
+        headings: paragraphs.filter(function (paragraph) {
+          var pPr = directChildren(paragraph, 'pPr')[0];
+          var styleEl = pPr ? directChildren(pPr, 'pStyle')[0] : null;
+          return styleEl && /^heading/i.test(attr(styleEl, NS.w, 'val') || '');
+        }).length,
+        images: elements(box, NS.pic, 'pic').length,
+        links: elements(box, NS.w, 'hyperlink').length,
+        tables: elements(box, NS.w, 'tbl').length
+      });
+    });
+  });
+  return boxes;
+}
+
+/* Test 8: text boxes
+   Deterministic: that a text box exists, whether it holds any text, whether
+   it carries alt text, and whether two boxes anchored to the same paragraph
+   sit on the page in the order they appear in the file. Not deterministic:
+   the reading order a person actually gets. Manual review. */
+function testTextBoxes(docs) {
+  var result = {
+    id: 'textboxes',
+    name: 'Text boxes',
+    summary: 'Reports text boxes, which hold content outside the main flow of the document.',
+    items: [],
+    note: null
+  };
+
+  var boxes = collectTextBoxes(docs);
+  if (!boxes.length) {
+    result.status = 'untested';
+    result.detail = 'No text boxes were found in this document.';
+    return result;
+  }
+
+  var floating = 0;
+  boxes.forEach(function (box, index) {
+    var badges = [];
+    var raise = false;
+
+    /* a box holding only an image is not empty, and its badge says so below */
+    if (!box.text && !box.images && !box.tables) { badges.push('Contains nothing at all'); raise = true; }
+    if (!box.alt || !box.alt.trim()) { badges.push('No alt text on the text box'); raise = true; }
+    if (box.floating) floating++;
+    if (box.legacy) badges.push('Stored in the older VML form');
+
+    var holds = [];
+    if (box.headings) holds.push(box.headings === 1 ? 'a heading' : box.headings + ' headings');
+    if (box.tables) holds.push(box.tables === 1 ? 'a table' : box.tables + ' tables');
+    if (box.images) holds.push(box.images === 1 ? 'an image' : box.images + ' images');
+    if (box.links) holds.push(box.links === 1 ? 'a link' : box.links + ' links');
+    if (holds.length) badges.push('Holds ' + holds.join(', '));
+
+    var where = [];
+    if (box.part !== 'word/document.xml') where.push('in ' + partLabel(box.part));
+    if (box.inTable) where.push('in a table cell');
+    if (!box.floating) where.push('in the text flow');
+
+    result.items.push({
+      label: 'Text box ' + (index + 1),
+      badges: badges,
+      raise: raise,
+      value: (where.length ? where.join(', ') + (box.text ? ': ' : '') : '') + shorten(box.text, 70)
+    });
+  });
+
+  /* Two boxes anchored to the same paragraph, sitting on the page in the
+     opposite order to the file. Only compared when both give an offset from
+     the same starting point. */
+  var groups = {};
+  boxes.forEach(function (box, index) {
+    if (!box.anchorParagraph || !box.offset) return;
+    var key = box.part + ':' + (box.anchorParagraph.getAttribute('w14:paraId') || 'p');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ index: index, box: box });
+  });
+
+  var outOfOrder = 0;
+  Object.keys(groups).forEach(function (key) {
+    var group = groups[key];
+    for (var i = 1; i < group.length; i++) {
+      var previous = group[i - 1].box.offset;
+      var current = group[i].box.offset;
+      if (previous.relativeTo !== current.relativeTo) continue;
+      if (current.value < previous.value) outOfOrder++;
+    }
+  });
+
+  if (outOfOrder) {
+    result.items.unshift({
+      label: 'Text boxes',
+      raise: true,
+      badges: ['Two text boxes anchored to the same paragraph sit on the page in the opposite order to the file']
+    });
+  }
+
+  if (floating) {
+    result.items.unshift({
+      label: 'Text boxes',
+      raise: true,
+      badges: [floating === 1
+        ? 'A floating text box, so its place in the reading order depends on where it is anchored'
+        : floating + ' floating text boxes, so their place in the reading order depends on where they are anchored']
+    });
+  }
+
+  var count = boxes.length === 1 ? '1 text box' : boxes.length + ' text boxes';
+  result.status = result.items.some(function (item) { return item.raise; }) ? 'review' : 'pass';
+  result.detail = count + ' found.';
+
+  result.note = 'A text box holds content outside the main flow. This test can see that a box exists and what is in it, but not the order a screen reader will read it in, which depends on the reading software as much as the file. That needs <strong>manual review</strong>.';
+  return result;
+}
+
 var WANTED_PARTS = [
   'docProps/core.xml',
   'word/settings.xml',
@@ -1751,7 +1982,7 @@ var WANTED_PARTS = [
   'word/numbering.xml'
 ];
 
-var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists, testImages, testTables, testLinks];
+var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists, testImages, testTables, testLinks, testTextBoxes];
 
 function runTests(buffer, parseXml) {
   return readDocxParts(buffer, WANTED_PARTS, [EXTRA_PARTS, REL_PARTS]).then(function (read) {

@@ -41,9 +41,28 @@ The tool never assesses writing quality. Alt text that reads `chart001.png`, lin
 
 The line that makes this workable: a fact about the file can be flagged, an opinion about the writing cannot. "The link text is identical to its target URL" is a string comparison, so it is flagged. "The link text is unhelpful" is a judgement, so it is not.
 
+Anything raised for a person to resolve keeps a test off a **Pass**, even where nothing has failed. A document with no heading 1, an image the author marked decorative, a caption paragraph that is not linked to its table, a link to a local file path: none of these is a failure, and none of them should let someone walk away believing the document passed. In the code these rows carry a `raise` marker, so a new test has to decide deliberately whether a badge raises something or merely describes it.
+
+Badges that describe rather than raise leave a Pass intact: a second language in use, a tooltip, a link whose name comes from image alt text, a link stored as a field code, an email address. If every descriptive badge forced a review, one mailto link would stop a document ever passing and the status would carry no information.
+
+Messages state what is in the file and stop there. They do not explain why something matters, what a screen reader will do, or how to fix it. That is training material, not tool output, and the tool was doing it inconsistently and sometimes more confidently than the behaviour warrants.
+
+## Result rows
+
+Every row has the same shape:
+
+    label            the subject: "Heading 2", "Table 1", "Link 3", "Image"
+    flag-badge       a problem, red
+    badge-neutral    a finding worth a look, or a plain description, grey
+    value            what is actually in the file
+
+The value only ever holds file content: heading text, a link's text and target, a table's dimensions, alt text. Anything the tool has to say about that content goes in a badge. A row with nothing from the file in it is badge-only with no value.
+
+Findings that describe the whole document sort above the inventory of what was found. Findings about one specific item stay next to that item.
+
 ## What it tests
 
-Seven tests. Each reports one of four statuses: **Pass**, **Fail**, **Needs review**, or **Not tested** when the document has nothing for that test to look at.
+Eight tests. Each reports one of four statuses: **Pass**, **Fail**, **Needs review**, or **Not tested** when the document has nothing for that test to look at.
 
 ### 1. Document title
 
@@ -73,7 +92,7 @@ Also reported: list items containing line breaks, single item lists, and two sha
 
 Reads `@descr` on `wp:docPr` for every `wp:inline` and `wp:anchor` drawing, in the document body and in headers, footers, footnotes and endnotes. Header part names are discovered from the zip rather than assumed.
 
-Fails on absent, empty or whitespace-only alt text, and on an image that has only a `@title`, since a title is not announced as alt text. An image marked decorative with `adec:decorative` correctly passes with no alt text.
+Fails on absent, empty or whitespace-only alt text, and on an image that has only a `@title`, since a title is not announced as alt text. An image marked decorative with `adec:decorative` correctly has no alt text, and is raised for review rather than passed, because the tool has no way to confirm the image really is decorative.
 
 Alt text carrying Word's own boilerplate, such as "Description automatically generated", is flagged as needing review. That match only works on English-language Word.
 
@@ -87,7 +106,7 @@ The header row is `w:tblHeader` on the first row, read with its `w:val` honoured
 
 Three distinct failures: no header row marked, header row marked on a later row so Word ignores it, and an empty header cell. Merged cells, nested tables and single row tables are reported as needing review. A single row table is never failed for lacking a header, since that is the shape most layout tables take.
 
-Word's table alt text (`w:tblCaption`, `w:tblDescription`), a Caption-styled paragraph sitting above a table, and a first column styled to look like headers are all reported as information.
+Word's table alt text (`w:tblCaption`, `w:tblDescription`) is reported either way, as a per-table row when it is set and as a single collapsed row naming how many tables lack it when it is not. A Caption-styled paragraph sitting above a table, and a first column styled to look like headers, are both raised for review: neither is a failure, but both are things an author is likely to believe they have already handled.
 
 ### 7. Links
 
@@ -100,6 +119,32 @@ Fails only where a screen reader cannot use the link: no text, whitespace-only t
 Needs review for facts that need a human: the same visible text pointing at different targets, link text identical to its target URL, link text that is a URL but not the one the link points at, and a URL written as plain text that is not clickable.
 
 Everything else is listed with its text and target and no verdict, including generic text, tooltips, mailto targets and local `file:` paths.
+
+### 8. Text boxes
+
+A modern text box is a `wps` shape holding `w:txbxContent`, written inside `mc:Choice` with a VML copy of the same content in `mc:Fallback`. A legacy text box is a `v:textbox` inside `w:pict` with no DrawingML copy. A shape with no `w:txbxContent` is not a text box and is not reported here.
+
+Reports each box with what it holds and where it sits. Raised for review: a box that floats, since its place in the reading order depends on its anchor; a box with no alt text on the shape; a box containing nothing at all; and two boxes anchored to the same paragraph that sit on the page in the opposite order to the file. An inline box in the text flow is none of those things and passes.
+
+The floating note is one row per test rather than one per box, because it says the same thing about every one of them.
+
+## Content inside a text box
+
+Content in a text box is reported twice, by different tests saying different things. The links test says there is a link and it sits in a text box; the text box test says there is a box and it holds a link. Someone auditing links wants the first, someone auditing structure wants the second, and hiding a broken link from the link test because of where it sits would be the wrong outcome.
+
+One exception. A heading inside a text box is listed and raised, because Word's navigation pane and outline do not include it, but it is left out of the skipped-level sequence. It cannot skip a level in an outline it is not part of. Reporting and sequencing are separate decisions.
+
+## Three rules the text box work established
+
+These were all bugs in tests that had already been signed off, and none of them was visible until a file contained a text box.
+
+**Ignore `mc:Fallback` everywhere.** The shared element lookup filters it out, so a modern text box is read once rather than twice. Without this every test double counts everything inside a box, and the list test invents a split list out of the duplicate.
+
+**A paragraph's properties are direct children, never descendants.** A paragraph containing a text box has no `pPr` of its own, so a descendant search falls through into the box and reads its style instead. This produced a phantom empty heading on the file with a heading inside a box.
+
+**An image belongs to its own nearest drawing.** Find each `pic:pic` and walk up to the closest `wp:inline` or `wp:anchor`, rather than asking whether a drawing contains a picture anywhere below it. Otherwise a text box with a picture in it is reported as an image itself.
+
+**A paragraph's text stops at a drawing.** Text inside a box belongs to the box, not to the paragraph the shape is anchored to.
 
 ## The manual review principle
 
@@ -127,10 +172,10 @@ Two rules that came out of getting this wrong:
 
 ## Adding a test
 
-1. Write the check as a function taking the parsed parts and returning `{ id, name, summary, status, detail, items, note }`.
+1. Write the check as a function taking the parsed parts and returning `{ id, name, summary, status, detail, items, note }`. Rows are `{ label, value, flags, badges, raise }`.
 2. Add any new part it needs to `WANTED_PARTS`, or to the pattern that discovers headers and footers.
 3. Register it in `TESTS`.
 4. Build real `.docx` fixtures first, one per outcome, including at least one file the test must not flag.
 5. Run it against them and read the actual output before trusting it.
 
-Result rows all share one shape: `result-item__label` for the subject, then `flag-badge` for problems or `badge-neutral` for findings worth a look, then `result-item__value` for the detail.
+6. Decide for each badge whether it raises something for a person to resolve, and set `raise` if so. A test with a raised row cannot report a Pass.
