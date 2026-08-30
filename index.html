@@ -232,7 +232,7 @@ footer { margin-top: 3rem; color: var(--ink-soft); font-size: 0.9rem; }
 </main>
 
 <footer>
-  <p>Eight tests so far: document title, document language, headings, lists, image alt text, tables, links and text boxes. More to come.</p>
+  <p>Nine tests so far: document title, document language, headings, lists, image alt text, tables, links, text boxes and empty paragraphs.</p>
 </footer>
 </div>
 
@@ -1325,8 +1325,14 @@ function cellInfo(cell) {
     var merge = directChildren(tcPr, 'vMerge')[0];
     if (merge) vMerge = attr(merge, NS.w, 'val') || 'continue';
   }
-  var text = directChildren(cell, 'p').map(paragraphText).join(' ').trim();
-  return { text: text, span: span, vMerge: vMerge };
+  var raw = directChildren(cell, 'p').map(paragraphText).join('');
+  var hasDrawing = elements(cell, NS.w, 'drawing').length + elements(cell, NS.w, 'pict').length;
+  return {
+    text: raw.trim(),
+    empty: raw.length === 0 && !hasDrawing,
+    span: span,
+    vMerge: vMerge
+  };
 }
 
 function precedingCaption(table) {
@@ -1469,6 +1475,29 @@ function testTables(docs) {
     } else {
       result.items.push({ label: label, value: value });
     }
+
+    rows.slice(headerRows || 0).forEach(function (row, offset) {
+      var rowNumber = (headerRows || 0) + offset + 1;
+      var cells = row.cells.filter(function (cell) { return !cell.vMerge; });
+      if (!cells.length) return;
+      var empties = cells.filter(function (cell) { return cell.empty; });
+      if (empties.length === cells.length) {
+        result.items.push({
+          label: label, raise: true,
+          badges: ['Row ' + rowNumber + ' has no content in any cell']
+        });
+      } else if (empties.length) {
+        var columns = [];
+        row.cells.forEach(function (cell, position) {
+          if (cell.empty && !cell.vMerge) columns.push(position + 1);
+        });
+        result.items.push({
+          label: label, raise: true,
+          badges: ['Row ' + rowNumber + ', ' + (columns.length === 1 ? 'column ' + columns[0] + ' is empty' : 'columns ' + columns.join(', ') + ' are empty')]
+        });
+      }
+    });
+
 
     /* Word's own table alt text, and the things that only look like structure */
     if (table.caption || table.description) {
@@ -1974,6 +2003,124 @@ function testTextBoxes(docs) {
   return result;
 }
 
+/* ---------- empty paragraphs ----------
+   A paragraph is empty when it holds no characters at all. A space or a
+   non-breaking space is a character, so those paragraphs are not empty.
+   Word requires a final paragraph in the body before w:sectPr, in every
+   table cell and at the end of a header or footer, so the last paragraph
+   of a container is exempt.
+
+   Paragraphs that belong to another test are left to it: a list item
+   carries w:numPr, an empty heading carries a heading style, and a cell
+   whose only paragraph is empty is an empty cell. */
+
+function isEmptyParagraph(paragraph) {
+  if (paragraphText(paragraph).length) return false;
+  if (elements(paragraph, NS.w, 'drawing').length) return false;
+  if (elements(paragraph, NS.w, 'pict').length) return false;
+  return true;
+}
+
+function belongsToAnotherTest(paragraph, container, styleIndex) {
+  var pPr = directChildren(paragraph, 'pPr')[0];
+  if (pPr && directChildren(pPr, 'numPr')[0]) return true;          /* a list item */
+
+  var styleEl = pPr ? directChildren(pPr, 'pStyle')[0] : null;
+  var styleId = styleEl ? attr(styleEl, NS.w, 'val') : null;
+  if (styleId) {
+    var resolved = resolveStyle(styleIndex, styleId);
+    if (headingLevelFromName(resolved.name) || outlineLevelToHeading(resolved.outlineLvl)) return true;
+  }
+  /* the only paragraph in a cell is that cell's content, so an empty one
+     is an empty cell */
+  if (container.localName === 'tc' && directChildren(container, 'p').length === 1) return true;
+  return false;
+}
+
+function collectEmptyRuns(docs) {
+  var runs = [];
+  var styleIndex = buildStyleIndex(docs['word/styles.xml']);
+
+  Object.keys(docs).forEach(function (path) {
+    if (path !== 'word/document.xml' && !EXTRA_PARTS.test(path)) return;
+
+    var containers = [];
+    var body = elements(docs[path], NS.w, 'body')[0];
+    if (body) containers.push(body);
+    else if (docs[path].documentElement) containers.push(docs[path].documentElement);
+    elements(docs[path], NS.w, 'tc').forEach(function (cell) { containers.push(cell); });
+
+    containers.forEach(function (container) {
+      var paragraphs = directChildren(container, 'p');
+      var lastParagraph = paragraphs[paragraphs.length - 1];
+      var run = [];
+
+      var flush = function () {
+        if (run.length > 1) {
+          runs.push({
+            part: path,
+            container: container.localName,
+            count: run.length
+          });
+        }
+        run = [];
+      };
+
+      for (var child = container.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType !== 1) continue;
+        if (child.localName === 'tbl') { flush(); continue; }
+        if (child.localName !== 'p') continue;
+
+        var ours = isEmptyParagraph(child) &&
+          child !== lastParagraph &&
+          !belongsToAnotherTest(child, container, styleIndex);
+        if (ours) run.push(child); else flush();
+      }
+      flush();
+    });
+  });
+  return runs;
+}
+
+/* Test 9: empty paragraphs
+   Deterministic: a paragraph holds no characters, and how many sit together.
+   Not deterministic: whether the spacing was deliberate. Manual review. */
+function testEmptyParagraphs(docs) {
+  var result = {
+    id: 'empty-paragraphs',
+    name: 'Empty paragraphs',
+    summary: 'Reports runs of empty paragraphs, which are usually spacing and are announced one by one.',
+    items: [],
+    note: null
+  };
+
+  var runs = collectEmptyRuns(docs);
+  if (!runs.length) {
+    result.status = 'pass';
+    result.detail = 'No runs of empty paragraphs were found.';
+    return result;
+  }
+
+  var total = 0;
+  runs.forEach(function (run) {
+    total += run.count;
+    var where = [];
+    if (run.part !== 'word/document.xml') where.push('in ' + partLabel(run.part));
+    if (run.container === 'tc') where.push('in a table cell');
+    result.items.push({
+      label: 'Empty paragraphs',
+      raise: true,
+      badges: ['A run of ' + run.count + ' empty paragraphs' + (where.length ? ', ' + where.join(', ') : '')]
+    });
+  });
+
+  result.status = 'review';
+  result.detail = (runs.length === 1 ? '1 run' : runs.length + ' runs') + ' of empty paragraphs found, ' +
+    total + ' paragraphs in total.';
+  result.note = 'Each empty paragraph is announced separately when a document is read aloud. A single empty paragraph between blocks is not reported, and the final paragraph of the body, of a table cell and of a header or footer is required by Word so it is never counted. Whether the spacing was deliberate needs <strong>manual review</strong>.';
+  return result;
+}
+
 var WANTED_PARTS = [
   'docProps/core.xml',
   'word/settings.xml',
@@ -1982,7 +2129,7 @@ var WANTED_PARTS = [
   'word/numbering.xml'
 ];
 
-var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists, testImages, testTables, testLinks, testTextBoxes];
+var TESTS = [testDocumentTitle, testDocumentLanguage, testHeadings, testLists, testImages, testTables, testLinks, testTextBoxes, testEmptyParagraphs];
 
 function runTests(buffer, parseXml) {
   return readDocxParts(buffer, WANTED_PARTS, [EXTRA_PARTS, REL_PARTS]).then(function (read) {

@@ -269,6 +269,13 @@ Message: 2 tables found, 1 needing a look.
 - **Table 2** [Nested inside another table] 3 rows by 2 columns, 1 header row, starts "Year"
 - **Table 2** [No table title or description set]
 
+## 06n-tables-empty-row.docx
+Badge: Needs review
+Message: 1 table found, 1 needing a look.
+- **Table 1** 4 rows by 3 columns, 1 header row, starts "Year"
+- **Table 1** [Row 3 has no content in any cell]
+- **Tables**  [No table title or description set]
+
 ## 06p-tables-layout-table.docx
 Badge: Needs review
 Message: 1 table found, 1 needing a look.
@@ -320,6 +327,19 @@ Message: 7 tables found, 4 without a usable header row.
 - **Table 6** [No table title or description set]
 - **Table 7** [Header row marked on row 2, not the first row] 5 rows by 3 columns, starts "Year"
 - **Table 7** [No table title or description set]
+
+## 06v-tables-empty-data-cell.docx
+Badge: Needs review
+Message: 1 table found, 1 needing a look.
+- **Table 1** 4 rows by 3 columns, 1 header row, starts "Year"
+- **Table 1** [Row 3, column 2 is empty]
+- **Tables** [No table title or description set]
+
+## 06w-tables-whitespace-only-data-cell.docx
+Badge: Pass
+Message: 1 table found, each with a marked header row.
+- **Table 1** 4 rows by 3 columns, 1 header row, starts "Year"
+- **Tables** [No table title or description set]
 
 ---
 
@@ -526,3 +546,69 @@ Message: 2 text boxes found.
 - **Text boxes** [2 floating text boxes, so their place in the reading order depends on where they are anchored]
 - **Text box 1** First: submit your application online.
 - **Text box 2** Second: the panel assesses your application.
+
+---
+
+## 11a-empty-paras-two-consecutive.docx
+Badge: Needs review
+Message: 1 run of empty paragraphs found, 2 paragraphs in total.
+- **Empty paragraphs** [A run of 2 empty paragraphs]
+
+## 11b-empty-paras-four-consecutive.docx
+Badge: Needs review
+Message: 1 run of empty paragraphs found, 4 paragraphs in total.
+- **Empty paragraphs** [A run of 4 empty paragraphs]
+
+## 11c-empty-paras-as-a-page-break.docx
+Badge: Needs review
+Message: 1 run of empty paragraphs found, 10 paragraphs in total.
+- **Empty paragraphs** [A run of 10 empty paragraphs]
+
+## 11d-empty-paras-three-trailing-before-sectpr.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11e-empty-paras-inside-a-populated-cell.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11f-empty-paras-in-a-page-header.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11g-empty-paras-single.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11h-empty-paras-spaces-only.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11i-empty-paras-non-breaking-space-only.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11j-empty-paras-run-broken-by-whitespace.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11k-empty-paras-one-trailing-before-sectpr.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11l-empty-paras-heading-style-not-ours.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11m-empty-paras-numpr-not-ours.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11n-empty-paras-sole-cell-content-not-ours.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
+## 11o-empty-paras-mixed.docx
+Badge: Pass/Fail/Needs review
+Message: 
+
